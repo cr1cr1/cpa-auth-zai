@@ -33,7 +33,15 @@ sources:
 
 **Tech Stack:** The latest supported CPA public plugin API/ABI, cgo, the Go toolchain required by that CPA revision, and the Go standard library. The inspected baseline is CPA v8 with Go 1.26.10. Use CPA transport and protocol translation instead of a separate browser service or HTTP stack.
 
-**Spec:** The Requirements section below is the self-contained specification derived from the conversation. This is a draft plan for review, not approval to implement.
+**Spec:** The Requirements section below is the self-contained specification derived from the conversation.
+
+## Status (2026-10-24)
+
+- Tasks 1–4 implemented and unit-tested (59 tests, race-clean); Task 6 packaging done (`make build` artifact, README, rollback docs).
+- Live integration verified in a disposable sibling of the operator's CPA v8 container: registration, live login start/pending-poll/cancel, management-only history route, quota 404 semantics.
+- Review hardening (poll-credential server-side only, flex-number quota decode, sanitized usage errors, https authorize check, expiry clamp, stream-fallback tests) committed as 63ffe22.
+- Task 5 remains open at the documented scope gate: the deployed management UI has no timezone preference to supply (see docs/compatibility.md); extending it is external-repository work needing approval.
+- The gated account run (complete sign-in, then verify token-only model execution, quota, history) awaits the operator. This is a draft plan for review, not approval to implement.
 
 ## Requirements
 

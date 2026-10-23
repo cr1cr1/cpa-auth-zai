@@ -67,3 +67,17 @@ Disposable sibling of the operator's `cli-proxy-api` container (same image), iso
 datetime strings) are unverified. The plugin sends start/end converted to the
 response's reported source timezone (Asia/Shanghai for the fixture). If a live
 check shows different semantics, `fetchUsageDetail` is the single place to fix.
+
+## Management UI timezone (Task 5 scope evidence)
+
+Inspected the deployed management UI build (`static/management.html`,
+2026-10-23): it has **no display-timezone preference**. The only IANA timezone
+setting is `claudeHeaderTimezone` (config path
+`upstream.claude.header-defaults.timezone`), which cloaks `currentDate` in
+Claude requests. All timestamps render through browser-locale `Intl.*` calls.
+
+Consequence: a "UI-selected timezone" for history requires a management-UI
+extension (external repository) plus a host channel to pass the selection.
+Until that approved scope lands, the history endpoint takes `timezone`
+explicitly and defaults to the source timezone with `provider-day` labeling —
+never the server's clock.

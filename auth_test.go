@@ -1,0 +1,577 @@
+package main
+
+import (
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+)
+
+const (
+	authTestFlowID  = "flow-123"
+	authTestAuthURL = "https://zcode.z.ai/oauth/authorize?flow=flow-123"
+	authTestEmail   = "user@example.com"
+)
+
+// authHostCall records one scripted upstream request.
+type authHostCall struct {
+	Method  string
+	URL     string
+	Headers map[string][]string
+	Body    []byte
+}
+
+// authFakeHost replaces hostCaller and records every host.http.do request.
+type authFakeHost struct {
+	mu      sync.Mutex
+	calls   []authHostCall
+	respond func(authHostCall) []byte
+}
+
+func (f *authFakeHost) recorded() []authHostCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]authHostCall(nil), f.calls...)
+}
+
+func (f *authFakeHost) countURL(prefix string) int {
+	count := 0
+	for _, call := range f.recorded() {
+		if strings.HasPrefix(call.URL, prefix) {
+			count++
+		}
+	}
+	return count
+}
+
+// installAuthFakeHost swaps hostCaller for the scripted fake and restores the
+// previous caller when the test ends.
+func installAuthFakeHost(t *testing.T, respond func(authHostCall) []byte) *authFakeHost {
+	t.Helper()
+	fake := &authFakeHost{respond: respond}
+	prev := hostCaller
+	hostCaller = func(method string, payload []byte) ([]byte, error) {
+		var req hostHTTPRequest
+		if errUnmarshal := json.Unmarshal(payload, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		call := authHostCall{Method: req.Request.Method, URL: req.Request.URL, Headers: req.Request.Headers, Body: req.Request.Body}
+		fake.mu.Lock()
+		fake.calls = append(fake.calls, call)
+		fake.mu.Unlock()
+		return respond(call), nil
+	}
+	t.Cleanup(func() { hostCaller = prev })
+	return fake
+}
+
+// authHostEnvelope scripts one upstream HTTP response inside a host envelope.
+func authHostEnvelope(status int, body string) []byte {
+	resultRaw, _ := json.Marshal(hostHTTPResponse{StatusCode: status, Body: []byte(body)})
+	envelopeRaw, _ := json.Marshal(pluginabi.Envelope{OK: true, Result: resultRaw})
+	return envelopeRaw
+}
+
+func callAuthMethod(t *testing.T, method, payload string) (json.RawMessage, error) {
+	t.Helper()
+	raw, errHandle := handleCall(method, []byte(payload))
+	if errHandle != nil {
+		return nil, errHandle
+	}
+	var envelope pluginabi.Envelope
+	if errUnmarshal := json.Unmarshal(raw, &envelope); errUnmarshal != nil {
+		t.Fatalf("decode envelope for %s: %v", method, errUnmarshal)
+	}
+	if !envelope.OK {
+		t.Fatalf("envelope for %s not ok", method)
+	}
+	return envelope.Result, nil
+}
+
+func decodeAuthResult(t *testing.T, raw json.RawMessage, out any) {
+	t.Helper()
+	if errUnmarshal := json.Unmarshal(raw, out); errUnmarshal != nil {
+		t.Fatalf("decode %T: %v", out, errUnmarshal)
+	}
+}
+
+func resetAuthFlows() {
+	flowsMu.Lock()
+	flows = map[string]*loginFlow{}
+	flowsMu.Unlock()
+}
+
+func authInitBody(expiresAt any, pollIntervalSec int) string {
+	data := map[string]any{"flow_id": authTestFlowID, "authorize_url": authTestAuthURL}
+	if expiresAt != nil {
+		data["expires_at"] = expiresAt
+	}
+	if pollIntervalSec > 0 {
+		data["poll_interval_sec"] = pollIntervalSec
+	}
+	raw, _ := json.Marshal(map[string]any{"code": 0, "msg": "ok", "data": data})
+	return string(raw)
+}
+
+func authReadyBody() string {
+	return `{"code":0,"data":{"status":"ready","token":"zcode-jwt","zai.access_token":"oauth-tok","user":{"email":"` + authTestEmail + `","id":"user-1"}}}`
+}
+
+// authLoginRoutes scripts the full happy-path upstream conversation.
+func authLoginRoutes(t *testing.T, pollBody func() string) *authFakeHost {
+	return installAuthFakeHost(t, func(call authHostCall) []byte {
+		switch {
+		case call.URL == cliInitURL:
+			return authHostEnvelope(200, authInitBody("2026-10-23T19:00:00Z", 0))
+		case strings.HasPrefix(call.URL, cliPollURL):
+			return authHostEnvelope(200, pollBody())
+		case call.URL == businessLoginURL:
+			if string(call.Body) != `{"token":"oauth-tok"}` {
+				t.Errorf("business login body = %s", call.Body)
+			}
+			return authHostEnvelope(200, `{"code":200,"data":{"access_token":"biz-jwt"}}`)
+		case call.URL == customerInfoURL:
+			return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-first","isDefault":false},{"organizationId":"org-default","isDefault":true,"projects":[{"projectId":"proj-default","id":"x"}]}]}}`)
+		}
+		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
+		return authHostEnvelope(404, `{"code":404,"msg":"not found"}`)
+	})
+}
+
+func authStart(t *testing.T) pluginapi.AuthLoginStartResponse {
+	t.Helper()
+	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthLoginStart, `{"Provider":"zai","host_callback_id":"cb-1"}`)
+	if errHandle != nil {
+		t.Fatalf("auth.login.start failed: %v", errHandle)
+	}
+	var resp pluginapi.AuthLoginStartResponse
+	decodeAuthResult(t, raw, &resp)
+	return resp
+}
+
+func authPoll(t *testing.T, state string) pluginapi.AuthLoginPollResponse {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{"Provider": "zai", "State": state, "host_callback_id": "cb-1"})
+	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthLoginPoll, string(payload))
+	if errHandle != nil {
+		t.Fatalf("auth.login.poll failed: %v", errHandle)
+	}
+	var resp pluginapi.AuthLoginPollResponse
+	decodeAuthResult(t, raw, &resp)
+	return resp
+}
+
+func requireHexToken(t *testing.T, value string, length int) {
+	t.Helper()
+	if len(value) != length {
+		t.Fatalf("token length = %d, want %d", len(value), length)
+	}
+	if _, errDecode := hex.DecodeString(value); errDecode != nil {
+		t.Fatalf("token is not hex: %v", errDecode)
+	}
+}
+
+// Acceptance: login start exchanges a poll token for an upstream authorize URL,
+// returns a 64-hex CPA state, and keeps the poll token out of the URL.
+func TestLoginStartReturnsURLAndState(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		if call.URL != cliInitURL || call.Method != http.MethodPost {
+			t.Errorf("init call = %s %s", call.Method, call.URL)
+		}
+		if string(call.Body) != `{"provider":"zai"}` {
+			t.Errorf("init body = %s", call.Body)
+		}
+		auth := call.Headers["Authorization"]
+		if len(auth) != 1 || !strings.HasPrefix(auth[0], "Bearer ") {
+			t.Fatalf("init Authorization = %v", auth)
+		}
+		requireHexToken(t, strings.TrimPrefix(auth[0], "Bearer "), 64)
+		return authHostEnvelope(200, authInitBody("2026-10-23T19:00:00Z", 2))
+	})
+	resp := authStart(t)
+	if resp.Provider != providerID || resp.URL != authTestAuthURL {
+		t.Fatalf("start response = %+v", resp)
+	}
+	requireHexToken(t, resp.State, 64)
+	if want := time.Date(2026, 10, 23, 19, 0, 0, 0, time.UTC); !resp.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", resp.ExpiresAt, want)
+	}
+	if resp.Metadata["flow_id"] != authTestFlowID {
+		t.Fatalf("flow_id = %v", resp.Metadata["flow_id"])
+	}
+	pollToken, _ := resp.Metadata["poll_token"].(string)
+	requireHexToken(t, pollToken, 64)
+	if strings.Contains(resp.URL, pollToken) {
+		t.Fatalf("authorize URL must not carry the poll token: %s", resp.URL)
+	}
+	if flow := lookupAuthFlow(resp.State); flow == nil || flow.pollInterval != 2*time.Second {
+		t.Fatalf("flow not persisted with upstream interval: %+v", lookupAuthFlow(resp.State))
+	}
+	if fake.countURL(cliInitURL) != 1 {
+		t.Fatalf("init calls = %d, want 1", fake.countURL(cliInitURL))
+	}
+}
+
+// Acceptance: upstream rejection surfaces a short sanitized message; a long
+// hostile body must not leak past the detail cap.
+func TestLoginStartUpstreamFailureIsSanitized(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		return authHostEnvelope(401, `{"code":1113,"msg":"cli token rejected"}`)
+	})
+	if _, errHandle := handleCall(pluginabi.MethodAuthLoginStart, []byte(`{"Provider":"zai","host_callback_id":"cb-1"}`)); errHandle == nil {
+		t.Fatalf("upstream 401 must fail login start")
+	} else if !strings.Contains(errHandle.Error(), "401") || !strings.Contains(errHandle.Error(), "cli token rejected") {
+		t.Fatalf("error = %q, want status and sanitized detail", errHandle.Error())
+	}
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		return authHostEnvelope(500, strings.Repeat("x", 5000)+" SECRET-VALUE-XYZ")
+	})
+	_, errHandle := handleCall(pluginabi.MethodAuthLoginStart, []byte(`{"Provider":"zai","host_callback_id":"cb-1"}`))
+	if errHandle == nil {
+		t.Fatalf("upstream 500 must fail login start")
+	}
+	if strings.Contains(errHandle.Error(), "SECRET-VALUE-XYZ") {
+		t.Fatalf("error leaked body tail: %q", errHandle.Error())
+	}
+	if len(errHandle.Error()) > 400 {
+		t.Fatalf("error detail not capped: %d chars", len(errHandle.Error()))
+	}
+}
+
+// Acceptance: a poll before completion reports pending and the recorded poll
+// request carries the flow id and the bearer poll token.
+func TestLoginPollPending(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := authLoginRoutes(t, func() string { return `{"code":0,"data":{"status":"pending"}}` })
+	started := authStart(t)
+	resp := authPoll(t, started.State)
+	if resp.Status != pluginapi.AuthLoginStatusPending {
+		t.Fatalf("status = %q, want pending", resp.Status)
+	}
+	polls := fake.recorded()
+	if fake.countURL(cliPollURL) != 1 {
+		t.Fatalf("poll calls = %d, want 1", fake.countURL(cliPollURL))
+	}
+	last := polls[len(polls)-1]
+	if last.URL != cliPollURL+authTestFlowID {
+		t.Fatalf("poll URL = %s", last.URL)
+	}
+	pollToken, _ := started.Metadata["poll_token"].(string)
+	if want := "Bearer " + pollToken; strings.Join(last.Headers["Authorization"], ",") != want {
+		t.Fatalf("poll Authorization = %v, want %q", last.Headers["Authorization"], want)
+	}
+}
+
+// Acceptance: a ready poll exchanges once, stores oauth+zcode+biz tokens with
+// account identity, enriches org/project metadata, and consumes the flow.
+func TestLoginPollSuccess(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	authLoginRoutes(t, func() string { return authReadyBody() })
+	started := authStart(t)
+	resp := authPoll(t, started.State)
+	if resp.Status != pluginapi.AuthLoginStatusSuccess {
+		t.Fatalf("status = %q (%s), want success", resp.Status, resp.Message)
+	}
+	if resp.Auth.Provider != providerID {
+		t.Fatalf("Auth.Provider = %q", resp.Auth.Provider)
+	}
+	if resp.Auth.Label != "Z.ai "+authTestEmail {
+		t.Fatalf("Auth.Label = %q", resp.Auth.Label)
+	}
+	if resp.Auth.ID != "zai-user-example-com" || resp.Auth.FileName != "zai-user-example-com.json" {
+		t.Fatalf("Auth.ID/FileName = %q / %q", resp.Auth.ID, resp.Auth.FileName)
+	}
+	var storage zaiStorage
+	if errUnmarshal := json.Unmarshal(resp.Auth.StorageJSON, &storage); errUnmarshal != nil {
+		t.Fatalf("decode StorageJSON: %v", errUnmarshal)
+	}
+	if storage.OAuthAccessToken != "oauth-tok" || storage.ZcodeJWT != "zcode-jwt" || storage.BizAccessToken != "biz-jwt" {
+		t.Fatalf("storage tokens = %+v", storage)
+	}
+	if storage.Email != authTestEmail || storage.Type != providerID || storage.Version != storageVersion {
+		t.Fatalf("storage identity = %+v", storage)
+	}
+	if resp.Auth.Metadata["organization_id"] != "org-default" || resp.Auth.Metadata["project_id"] != "proj-default" {
+		t.Fatalf("Auth.Metadata = %v", resp.Auth.Metadata)
+	}
+	if resp.Auth.Metadata["type"] != providerID {
+		t.Fatalf("Auth.Metadata type = %v", resp.Auth.Metadata["type"])
+	}
+	if again := authPoll(t, started.State); again.Status != pluginapi.AuthLoginStatusError {
+		t.Fatalf("replay poll status = %q, want error (flow must be consumed)", again.Status)
+	}
+}
+
+// Acceptance: a second poll inside the upstream interval must skip upstream.
+func TestPollRateLimitSkipsUpstream(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := authLoginRoutes(t, func() string { return `{"code":0,"data":{"status":"pending"}}` })
+	started := authStart(t)
+	if resp := authPoll(t, started.State); resp.Status != pluginapi.AuthLoginStatusPending {
+		t.Fatalf("first poll status = %q", resp.Status)
+	}
+	if resp := authPoll(t, started.State); resp.Status != pluginapi.AuthLoginStatusPending {
+		t.Fatalf("second poll status = %q", resp.Status)
+	}
+	if got := fake.countURL(cliPollURL); got != 1 {
+		t.Fatalf("upstream poll calls = %d, want 1", got)
+	}
+}
+
+// Acceptance: an expired flow fails the poll without contacting upstream.
+func TestPollExpiredFlow(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		if call.URL == cliInitURL {
+			return authHostEnvelope(200, authInitBody("2020-01-01T00:00:00Z", 0))
+		}
+		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not poll"}`)
+	})
+	started := authStart(t)
+	if started.ExpiresAt.After(time.Now()) {
+		t.Fatalf("start accepted a past expiry: %v", started.ExpiresAt)
+	}
+	resp := authPoll(t, started.State)
+	if resp.Status != pluginapi.AuthLoginStatusError || !strings.Contains(resp.Message, "expired") {
+		t.Fatalf("poll = %+v, want expired error", resp)
+	}
+	if fake.countURL(cliPollURL) != 0 {
+		t.Fatalf("expired flow contacted upstream %d times", fake.countURL(cliPollURL))
+	}
+}
+
+// Acceptance: an unknown state fails without any upstream call.
+func TestPollUnknownState(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
+	})
+	resp := authPoll(t, "missing-state")
+	if resp.Status != pluginapi.AuthLoginStatusError || !strings.Contains(resp.Message, "not found") {
+		t.Fatalf("poll = %+v, want not-found error", resp)
+	}
+	if len(fake.recorded()) != 0 {
+		t.Fatalf("unknown state must not contact upstream")
+	}
+}
+
+// Acceptance: ten concurrent polls on one state exchange exactly once.
+func TestConcurrentPollSingleExchange(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		switch {
+		case call.URL == cliInitURL:
+			return authHostEnvelope(200, authInitBody(nil, 0))
+		case strings.HasPrefix(call.URL, cliPollURL):
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			return authHostEnvelope(200, authReadyBody())
+		case call.URL == businessLoginURL:
+			return authHostEnvelope(200, `{"code":200,"data":{"access_token":"biz-jwt"}}`)
+		case call.URL == customerInfoURL:
+			return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-1","isDefault":true}]}}`)
+		}
+		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
+		return authHostEnvelope(404, `{"code":404,"msg":"not found"}`)
+	})
+	started := authStart(t)
+	const workers = 10
+	startLine := make(chan struct{})
+	results := make(chan pluginapi.AuthLoginPollResponse, workers)
+	for range workers {
+		go func() {
+			<-startLine
+			payload, _ := json.Marshal(map[string]any{"Provider": "zai", "State": started.State, "host_callback_id": "cb-1"})
+			raw, errHandle := handleCall(pluginabi.MethodAuthLoginPoll, payload)
+			if errHandle != nil {
+				results <- pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: errHandle.Error()}
+				return
+			}
+			var envelope pluginabi.Envelope
+			if errUnmarshal := json.Unmarshal(raw, &envelope); errUnmarshal != nil || !envelope.OK {
+				results <- pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: "bad envelope"}
+				return
+			}
+			var resp pluginapi.AuthLoginPollResponse
+			if errUnmarshal := json.Unmarshal(envelope.Result, &resp); errUnmarshal != nil {
+				results <- pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: errUnmarshal.Error()}
+				return
+			}
+			results <- resp
+		}()
+	}
+	close(startLine)
+	<-entered
+	for pending := 0; pending < workers-1; pending++ {
+		if resp := <-results; resp.Status != pluginapi.AuthLoginStatusPending {
+			t.Fatalf("in-flight poll returned %q (%s), want pending", resp.Status, resp.Message)
+		}
+	}
+	close(release)
+	if resp := <-results; resp.Status != pluginapi.AuthLoginStatusSuccess {
+		t.Fatalf("exchange poll returned %q (%s), want success", resp.Status, resp.Message)
+	}
+	if got := fake.countURL(cliPollURL); got != 1 {
+		t.Fatalf("upstream poll calls = %d, want exactly 1", got)
+	}
+}
+
+// Acceptance: refresh rebuilds the stored record without any upstream call.
+func TestRefreshMakesNoUpstreamCall(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		t.Errorf("refresh must not contact upstream: %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
+	})
+	storageJSON := `{"version":1,"type":"zai","oauth_access_token":"oauth-tok","email":"` + authTestEmail + `"}`
+	payload := fmt.Sprintf(`{"AuthID":"zai-user-example-com","StorageJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
+	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthRefresh, payload)
+	if errHandle != nil {
+		t.Fatalf("auth.refresh failed: %v", errHandle)
+	}
+	var resp pluginapi.AuthRefreshResponse
+	decodeAuthResult(t, raw, &resp)
+	if resp.Auth.Provider != providerID || resp.Auth.ID != "zai-user-example-com" || resp.Auth.Label != "Z.ai "+authTestEmail {
+		t.Fatalf("refresh Auth = %+v", resp.Auth)
+	}
+	var storage zaiStorage
+	if errUnmarshal := json.Unmarshal(resp.Auth.StorageJSON, &storage); errUnmarshal != nil || storage.OAuthAccessToken != "oauth-tok" {
+		t.Fatalf("refresh StorageJSON = %s (%v)", resp.Auth.StorageJSON, errUnmarshal)
+	}
+	if until := time.Until(resp.NextRefreshAfter); until < 23*time.Hour || until > 25*time.Hour {
+		t.Fatalf("NextRefreshAfter = %v (~%v), want ~24h", resp.NextRefreshAfter, until)
+	}
+	if calls := len(fake.recorded()); calls != 0 {
+		t.Fatalf("refresh made %d upstream calls, want 0", calls)
+	}
+}
+
+// Acceptance: no upstream request in the whole login conversation may touch key
+// management endpoints.
+func TestNoKeyManagementRequests(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	loginFake := authLoginRoutes(t, func() string { return authReadyBody() })
+	started := authStart(t)
+	if resp := authPoll(t, started.State); resp.Status != pluginapi.AuthLoginStatusSuccess {
+		t.Fatalf("login poll status = %q (%s)", resp.Status, resp.Message)
+	}
+	audited := loginFake.recorded()
+	refreshFake := installAuthFakeHost(t, func(call authHostCall) []byte {
+		t.Errorf("parse/refresh must not contact upstream: %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
+	})
+	storageJSON := `{"version":1,"type":"zai","oauth_access_token":"oauth-tok","email":"` + authTestEmail + `"}`
+	refreshPayload := fmt.Sprintf(`{"StorageJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
+	if _, errHandle := callAuthMethod(t, pluginabi.MethodAuthRefresh, refreshPayload); errHandle != nil {
+		t.Fatalf("auth.refresh failed: %v", errHandle)
+	}
+	parsePayload := fmt.Sprintf(`{"RawJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
+	if _, errHandle := callAuthMethod(t, pluginabi.MethodAuthParse, parsePayload); errHandle != nil {
+		t.Fatalf("auth.parse failed: %v", errHandle)
+	}
+	audited = append(audited, refreshFake.recorded()...)
+	if len(audited) == 0 {
+		t.Fatalf("audit expected recorded upstream calls, got none")
+	}
+	for _, call := range audited {
+		if strings.Contains(call.URL, "api_keys") {
+			t.Fatalf("key management endpoint requested: %s", call.URL)
+		}
+	}
+}
+
+// Acceptance: parse accepts a zai storage record and rebuilds normalized auth
+// data with the provider identity.
+func TestParseAuthHandlesZaiStorage(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		t.Errorf("parse must not contact upstream: %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
+	})
+	storageJSON := `{"version":1,"type":"zai","oauth_access_token":"oauth-tok","email":"` + authTestEmail + `","extra_field":"dropped"}`
+	payload := fmt.Sprintf(`{"RawJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
+	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthParse, payload)
+	if errHandle != nil {
+		t.Fatalf("auth.parse failed: %v", errHandle)
+	}
+	var resp pluginapi.AuthParseResponse
+	decodeAuthResult(t, raw, &resp)
+	if !resp.Handled {
+		t.Fatalf("zai storage not handled: %+v", resp)
+	}
+	if resp.Auth.Provider != providerID || resp.Auth.ID != "zai-user-example-com" {
+		t.Fatalf("Auth = %+v", resp.Auth)
+	}
+	if resp.Auth.FileName != "zai-user-example-com.json" || resp.Auth.Label != "Z.ai "+authTestEmail {
+		t.Fatalf("Auth file/label = %q / %q", resp.Auth.FileName, resp.Auth.Label)
+	}
+	var storage zaiStorage
+	if errUnmarshal := json.Unmarshal(resp.Auth.StorageJSON, &storage); errUnmarshal != nil {
+		t.Fatalf("decode StorageJSON: %v", errUnmarshal)
+	}
+	if storage.OAuthAccessToken != "oauth-tok" || storage.Email != authTestEmail {
+		t.Fatalf("normalized storage = %+v", storage)
+	}
+	if resp.Auth.Metadata["type"] != providerID {
+		t.Fatalf("Auth.Metadata = %v", resp.Auth.Metadata)
+	}
+}
+
+// Acceptance: foreign or tokenless material is not handled and never contacts
+// upstream.
+func TestParseAuthRejectsForeign(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		t.Errorf("parse must not contact upstream: %s %s", call.Method, call.URL)
+		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
+	})
+	for name, raw := range map[string]string{
+		"foreign type":  `{"version":1,"type":"other","api_key":"k"}`,
+		"tokenless zai": `{"version":1,"type":"zai"}`,
+		"not json":      `{{{`,
+	} {
+		payload := fmt.Sprintf(`{"RawJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(raw)))
+		respRaw, errHandle := handleCall(pluginabi.MethodAuthParse, []byte(payload))
+		if errHandle != nil {
+			t.Fatalf("%s: auth.parse failed: %v", name, errHandle)
+		}
+		var envelope pluginabi.Envelope
+		if errUnmarshal := json.Unmarshal(respRaw, &envelope); errUnmarshal != nil || !envelope.OK {
+			t.Fatalf("%s: envelope not ok: %s", name, respRaw)
+		}
+		var resp pluginapi.AuthParseResponse
+		decodeAuthResult(t, envelope.Result, &resp)
+		if resp.Handled {
+			t.Fatalf("%s: foreign material handled: %+v", name, resp)
+		}
+	}
+}

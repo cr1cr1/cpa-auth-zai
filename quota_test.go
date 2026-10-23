@@ -354,3 +354,28 @@ func TestQuotaFetchWithoutCredentialsIsEmpty(t *testing.T) {
 		t.Fatalf("no-credential quota must stay unknown, got %s", result)
 	}
 }
+
+// Acceptance: the quota/limit shape is only reported; string-encoded numbers
+// must decode instead of silently emptying the response.
+func TestQuotaFetchAcceptsStringNumbers(t *testing.T) {
+	swapHostCaller(t, func(method string, payload []byte) ([]byte, error) {
+		return upstreamHTTP(t, 200, []byte(`{"code":"200","success":true,"msg":"ok","data":{"limits":[{"unit":"3","number":"5","percentage":"34.2","nextResetTime":"1770000000000"}]}}`)), nil
+	})
+	result := decodeQuotaResult(t, callResult(t, pluginabi.MethodQuotaFetch, quotaFetchPayload(t)))
+	buckets, ok := result["groups"]
+	if !ok || !strings.Contains(string(buckets), "5h") {
+		t.Fatalf("string-number quota body must decode to buckets, got %s", result)
+	}
+	var groups []struct {
+		Buckets []struct {
+			Window            string  `json:"window"`
+			RemainingFraction float64 `json:"remainingFraction"`
+		} `json:"buckets"`
+	}
+	if errUnmarshal := json.Unmarshal(buckets, &groups); errUnmarshal != nil || len(groups) == 0 || len(groups[0].Buckets) == 0 {
+		t.Fatalf("decode buckets: %v %s", errUnmarshal, buckets)
+	}
+	if got := groups[0].Buckets[0].RemainingFraction; got < 0.6579 || got > 0.6581 {
+		t.Fatalf("remainingFraction = %v, want ~0.658", got)
+	}
+}

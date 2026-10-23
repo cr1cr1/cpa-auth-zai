@@ -261,3 +261,15 @@ func mustTime(t *testing.T, raw string) time.Time {
 	}
 	return parsed
 }
+
+// Acceptance: a hostile upstream msg cannot flood the management 502 body.
+func TestUsageBusinessErrorDetailCapped(t *testing.T) {
+	huge := strings.Repeat("x", 5000)
+	_, err := decodeUsageDetail([]byte(`{"code":1113,"msg":"` + huge + `","success":false}`))
+	if err == nil {
+		t.Fatalf("business error must fail decode")
+	}
+	if len(err.Error()) > 400 {
+		t.Fatalf("error detail not capped: %d chars", len(err.Error()))
+	}
+}

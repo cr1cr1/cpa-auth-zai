@@ -20,7 +20,7 @@ fmt:
 
 build: $(SO)
 
-$(SO):
+$(SO): $(wildcard *.go) go.mod
 	CGO_ENABLED=1 go build -buildmode=c-shared -o $@ .
 	@rm -f $(SO).h
 

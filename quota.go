@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -83,7 +83,7 @@ func handleQuotaReset([]byte) (any, error) {
 // failed entirely; resp is non-nil when a non-2xx upstream answer caused it.
 func tryBearerCandidates(callbackID, url string, storage *zaiStorage) (*hostHTTPResponse, bool) {
 	for _, token := range storage.bearerCandidates() {
-		response, errCall := hostDo(context.Background(), callbackID, "GET", url,
+		response, errCall := hostDo(callbackID, "GET", url,
 			map[string][]string{"Authorization": {"Bearer " + token}}, nil)
 		if errCall != nil {
 			return nil, false
@@ -100,18 +100,45 @@ func tryBearerCandidates(callbackID, url string, storage *zaiStorage) (*hostHTTP
 	return nil, false
 }
 
-// quotaLimitRow keeps every upstream value as json.Number so numbers may
-// arrive as strings or JSON numbers. All fields are optional.
+// flexNumber accepts a JSON number or a decimal string; both decode into a
+// numeric literal. Empty or null stays zero. The quota/limit shape is only
+// reported, so the wire may use either form.
+type flexNumber string
+
+func (f *flexNumber) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		*f = ""
+		return nil
+	}
+	if text[0] == '"' {
+		var quoted string
+		if errUnmarshal := json.Unmarshal(raw, &quoted); errUnmarshal != nil {
+			return errUnmarshal
+		}
+		text = strings.TrimSpace(quoted)
+	}
+	if text == "" {
+		*f = ""
+		return nil
+	}
+	if _, errParse := strconv.ParseFloat(text, 64); errParse != nil {
+		return fmt.Errorf("not a number: %s", text)
+	}
+	*f = flexNumber(text)
+	return nil
+}
+
+func (f flexNumber) String() string { return string(f) }
+
+// quotaLimitRow keeps every upstream scalar flexibly numeric. All fields are
+// optional.
 type quotaLimitRow struct {
-	Unit            json.Number `json:"unit"`
-	Number          json.Number `json:"number"`
-	Usage           json.Number `json:"usage"`
-	Percentage      json.Number `json:"percentage"`
-	CurrentValue    string      `json:"currentValue"`
-	AltCurrentValue string      `json:"current_value"`
-	NextResetTime   json.Number `json:"nextResetTime"`
-	AltNextReset    json.Number `json:"next_reset_time"`
-	Limit           json.Number `json:"limit"`
+	Unit          flexNumber `json:"unit"`
+	Number        flexNumber `json:"number"`
+	Percentage    flexNumber `json:"percentage"`
+	NextResetTime flexNumber `json:"nextResetTime"`
+	AltNextReset  flexNumber `json:"next_reset_time"`
 }
 
 // quotaWindow maps a verified unit/number pair to a bucket window. Other
@@ -138,9 +165,9 @@ func quotaWindowDescription(window string) string {
 // pluginapi.QuotaFetchResponse JSON shape, emitting only known values.
 func buildQuotaResponse(body []byte) (map[string]any, error) {
 	var envelope struct {
-		Code    json.Number `json:"code"`
-		Success *bool       `json:"success"`
-		Msg     string      `json:"msg"`
+		Code    flexNumber `json:"code"`
+		Success *bool      `json:"success"`
+		Msg     string     `json:"msg"`
 		Data    struct {
 			SubscriptionStatus    string          `json:"subscriptionStatus"`
 			AltSubscriptionStatus string          `json:"subscription_status"`
@@ -205,8 +232,8 @@ func quotaMetricLabel(window string) string {
 	return "7-day usage %"
 }
 
-// quotaNumber parses an optional json.Number payload value into float64.
-func quotaNumber(value json.Number) (float64, bool) {
+// quotaNumber parses an optional flexNumber payload value into float64.
+func quotaNumber(value flexNumber) (float64, bool) {
 	if value == "" {
 		return 0, false
 	}

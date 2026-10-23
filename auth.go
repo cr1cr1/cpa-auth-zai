@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -52,12 +52,6 @@ var (
 	flowsMu sync.Mutex
 	flows   = map[string]*loginFlow{}
 )
-
-func lookupAuthFlow(state string) *loginFlow {
-	flowsMu.Lock()
-	defer flowsMu.Unlock()
-	return flows[state]
-}
 
 func expireFlowsLocked() {
 	now := time.Now()
@@ -171,7 +165,7 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 		return nil, errToken
 	}
 	body, _ := json.Marshal(map[string]string{"provider": providerID})
-	resp, errDo := hostDo(context.Background(), req.HostCallbackID, http.MethodPost, cliInitURL, map[string][]string{
+	resp, errDo := hostDo(req.HostCallbackID, http.MethodPost, cliInitURL, map[string][]string{
 		"Authorization": {"Bearer " + pollToken},
 		"Content-Type":  {"application/json"},
 	}, body)
@@ -191,12 +185,16 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 	if init.Data.FlowID == "" || init.Data.AuthorizeURL == "" {
 		return nil, fmt.Errorf("z.ai cli init response missing flow_id or authorize_url")
 	}
+	authorizeURL, errParseURL := url.Parse(init.Data.AuthorizeURL)
+	if errParseURL != nil || authorizeURL.Scheme != "https" || authorizeURL.Host == "" {
+		return nil, fmt.Errorf("z.ai cli init returned an invalid authorize url")
+	}
 	state, errState := randomHex(32)
 	if errState != nil {
 		return nil, errState
 	}
 	expiresAt := time.Now().Add(defaultLoginTTL)
-	if parsed, ok := parseUpstreamExpiry(init.Data.ExpiresAt); ok {
+	if parsed, ok := parseUpstreamExpiry(init.Data.ExpiresAt); ok && parsed.After(time.Now()) && parsed.Before(time.Now().Add(24*time.Hour)) {
 		expiresAt = parsed
 	}
 	interval := time.Duration(init.Data.PollIntervalSec) * time.Second
@@ -216,12 +214,13 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 		pollInterval: interval,
 	}
 	flowsMu.Unlock()
+	// The flows map is the single holder of the poll credential; nothing that
+	// reaches the browser may carry the upstream poll token or flow id.
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  providerID,
 		URL:       init.Data.AuthorizeURL,
 		State:     state,
 		ExpiresAt: expiresAt,
-		Metadata:  map[string]any{"flow_id": init.Data.FlowID, "poll_token": pollToken},
 	}, nil
 }
 
@@ -267,7 +266,7 @@ func handleAuthLoginPoll(payload []byte) (any, error) {
 // exchangeLoginPoll runs one upstream poll exchange. consumed reports a
 // completed sign-in so the caller can delete the flow (single consumption).
 func exchangeLoginPoll(callbackID string, flow *loginFlow) (resp *pluginapi.AuthLoginPollResponse, err error, consumed bool) {
-	pollHTTP, errDo := hostDo(context.Background(), callbackID, http.MethodGet, cliPollURL+flow.flowID,
+	pollHTTP, errDo := hostDo(callbackID, http.MethodGet, cliPollURL+flow.flowID,
 		map[string][]string{"Authorization": {"Bearer " + flow.pollToken}}, nil)
 	if errDo != nil {
 		return nil, errDo, false
@@ -341,7 +340,7 @@ func pollError(format string, body []byte) *pluginapi.AuthLoginPollResponse {
 // token. The upstream envelope reports code 200 (0 accepted defensively).
 func exchangeBusinessLogin(callbackID, oauthToken string) (bizToken string, respFail *pluginapi.AuthLoginPollResponse, err error) {
 	body, _ := json.Marshal(map[string]string{"token": oauthToken})
-	bizHTTP, errDo := hostDo(context.Background(), callbackID, http.MethodPost, businessLoginURL,
+	bizHTTP, errDo := hostDo(callbackID, http.MethodPost, businessLoginURL,
 		map[string][]string{"Content-Type": {"application/json"}}, body)
 	if errDo != nil {
 		return "", nil, errDo
@@ -365,7 +364,7 @@ func exchangeBusinessLogin(callbackID, oauthToken string) (bizToken string, resp
 // fetchCustomerOrg enriches the record with the default organization and its
 // first project. It is optional context: any failure keeps empty values.
 func fetchCustomerOrg(callbackID, bizToken string) (orgID, projectID string) {
-	infoHTTP, errDo := hostDo(context.Background(), callbackID, http.MethodGet, customerInfoURL,
+	infoHTTP, errDo := hostDo(callbackID, http.MethodGet, customerInfoURL,
 		map[string][]string{"Authorization": {"Bearer " + bizToken}}, nil)
 	if errDo != nil || infoHTTP.StatusCode < 200 || infoHTTP.StatusCode > 299 {
 		return "", ""

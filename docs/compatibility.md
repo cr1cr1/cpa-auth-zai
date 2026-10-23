@@ -11,8 +11,24 @@ status: draft
 
 - **Verified (source):** confirmed in the CPA v8 checkout used for the `replace` directive.
 - **Verified (user):** confirmed by the operator with a live account request (response fixture).
+- **Verified (live):** exercised against the real CPA v8 docker image (`eceasy/cli-proxy-api:latest`, 2026-10-23) without an account sign-in.
 - **Reported:** third-party reverse-engineering publication; not confirmed by us or by z.ai documentation.
 - **Unverified:** assumed for design; must be confirmed by a live gated check before being trusted.
+
+## Live integration evidence (2026-10-23)
+
+Disposable sibling of the operator's `cli-proxy-api` container (same image), isolated config/auth/plugins:
+
+| Check | Result |
+|---|---|
+| Plugin load + registration in real CPA v8 binary | pass (`pluginhost: plugin registered plugin_id=cpa-auth-zai`) |
+| Management API shows `supports_oauth`/`oauth_provider=zai`, `supports_quota`/`quota_provider=zai` | pass |
+| `GET /v8/management/oauth/auth-url?provider=zai` against live z.ai | pass — hosted init accepted; real `chat.z.ai/api/oauth/authorize` URL returned |
+| Login poll without sign-in | pass — `{"status":"wait"}`; session cancel + terminal state clean |
+| History endpoint without params / public exposure | pass — 400; `/v0/resource/...` → 404 (not public) |
+| Quota for unknown auth_index | pass — 404 `auth not found` |
+| Unauthenticated management access | pass — 401 |
+| Poll → success (needs account sign-in), executor/quota/history with real credentials | **pending operator-gated run** |
 
 ## CPA contracts
 
@@ -32,7 +48,7 @@ status: draft
 | Usage-detail endpoint `GET /api/monitor/token-usage/usage-detail?usageType=MODEL&type=1` returns the documented JSON envelope | Verified (user) — fixture `testdata/usage-detail.json` | History view breaks; decode errors surface as management 502 |
 | Login token authorizes the monitor endpoints | Unverified | Quota/history return empty (`{}`) or 401-based fallbacks |
 | Login token authorizes `POST /api/coding/paas/v4/chat/completions` | Unverified | Model requests fail 401; surfaced as client 401, never replaced by API-key fallback |
-| Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` + `GET /api/v1/oauth/cli/poll/{flow_id}` with generated bearer | Reported ([PROTOCOL.md](https://cdn.jsdelivr.net/npm/pi-zcode-provider@0.1.0/PROTOCOL.md)) | Sign-in fails with a sanitized error; no fallback exists by design |
+| Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling | init + pending poll **verified (live)**; ready-completion path remains reported ([PROTOCOL.md](https://cdn.jsdelivr.net/npm/pi-zcode-provider@0.1.0/PROTOCOL.md)) | Sign-in fails with a sanitized error; no fallback exists by design |
 | Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | Reported | Only the short-lived OAuth token is available for upstream calls |
 | `quota/limit` response shape (unit/number window rows, percentage, nextResetTime) | Reported ([OpenUsage](https://openusage.sh/docs/providers/zai/)) | Quota buckets stay absent (unknown), summary empty |
 | Coding Plan model set = `glm-5.3`, `glm-5.3-flash` | Verified (z.ai FAQ, 2026-10) | Model list may need update when z.ai changes plans |

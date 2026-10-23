@@ -69,7 +69,7 @@ func decodeUsageDetail(raw []byte) (UsageDetail, error) {
 		return UsageDetail{}, fmt.Errorf("zai: decode usage detail: %w", errUnmarshal)
 	}
 	if envelope.Code != 200 || (envelope.Success != nil && !*envelope.Success) {
-		message := envelope.Msg
+		message := sanitizeDetail(envelope.Msg)
 		if message == "" {
 			message = "usage request failed"
 		}

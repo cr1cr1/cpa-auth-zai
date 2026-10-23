@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -555,5 +556,105 @@ func TestExecutorIdentifierMatchesProvider(t *testing.T) {
 	testDecode(t, result, &response)
 	if response.Identifier != providerID {
 		t.Fatalf("identifier = %q, want %q", response.Identifier, providerID)
+	}
+}
+
+// Acceptance: a 401 on the streaming open closes that host HTTP stream and
+// retries with the next bearer candidate; the retry's stream is the one pumped.
+func TestExecuteStreamBearerFallbackOn401(t *testing.T) {
+	doStreamCalls := 0
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			doStreamCalls++
+			if doStreamCalls == 1 {
+				return map[string]any{"status_code": 401, "stream_id": "h-reject"}, nil
+			}
+			return map[string]any{"status_code": 200, "stream_id": "h-ok"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": []byte("chunk"), "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-fb", "host_callback_id": "cb-fb",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	if doStreamCalls != 2 {
+		t.Fatalf("do_stream calls = %d, want 2 (fallback)", doStreamCalls)
+	}
+	closedRejected := false
+	pumpedOK := false
+	for _, call := range log.all() {
+		if call.Method == pluginabi.MethodHostHTTPStreamClose {
+			var closed struct {
+				StreamID string `json:"stream_id"`
+			}
+			testDecode(t, call.Payload, &closed)
+			if closed.StreamID == "h-reject" {
+				closedRejected = true
+			}
+		}
+		if call.Method == pluginabi.MethodHostHTTPStreamRead {
+			var read struct {
+				StreamID string `json:"stream_id"`
+			}
+			testDecode(t, call.Payload, &read)
+			if read.StreamID == "h-ok" {
+				pumpedOK = true
+			}
+		}
+	}
+	if !closedRejected {
+		t.Fatalf("rejected 401 host stream was not closed")
+	}
+	if !pumpedOK {
+		t.Fatalf("fallback host stream was not pumped")
+	}
+}
+
+// Acceptance: an emit failure must terminate the pump through closeRPCStream
+// with the failure message, never spin or leak the stream.
+func TestExecuteStreamEmitFailureCloses(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return map[string]any{"status_code": 200, "stream_id": "h-e"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": []byte("data"), "done": false}, nil
+		case pluginabi.MethodHostStreamEmit:
+			return nil, fmt.Errorf("emit channel closed")
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-emit-fail", "host_callback_id": "cb-ef",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	var closeErr string
+	for _, call := range log.all() {
+		if call.Method == pluginabi.MethodHostStreamClose {
+			var closed struct {
+				StreamID string `json:"stream_id"`
+				Error    string `json:"error"`
+			}
+			testDecode(t, call.Payload, &closed)
+			if closed.StreamID == "r-emit-fail" && closed.Error != "" {
+				closeErr = closed.Error
+			}
+		}
+	}
+	if closeErr == "" {
+		t.Fatalf("emit failure did not close the rpc stream with an error")
 	}
 }

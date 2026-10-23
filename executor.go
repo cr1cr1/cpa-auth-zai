@@ -127,7 +127,7 @@ func handleExecute(payload []byte) (any, error) {
 	candidates := storage.bearerCandidates()
 	var response *hostHTTPResponse
 	for index, candidate := range candidates {
-		attempt, errCall := hostDo(nil, request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(candidate), request.Payload)
+		attempt, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(candidate), request.Payload)
 		if errCall != nil {
 			return nil, errCall
 		}
@@ -260,7 +260,7 @@ func handleExecutorHTTP(payload []byte) (any, error) {
 	if !allowedZaiOrigin(request.URL) {
 		return nil, pluginabi.NewError("forbidden_origin", "only api.z.ai origins are allowed", 403)
 	}
-	response, errCall := hostDo(nil, request.HostCallbackID, request.Method, request.URL, request.Headers, request.Body)
+	response, errCall := hostDo(request.HostCallbackID, request.Method, request.URL, request.Headers, request.Body)
 	if errCall != nil {
 		return nil, errCall
 	}

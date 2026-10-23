@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -73,7 +72,7 @@ type hostHTTPResponse struct {
 
 // hostDo performs one upstream HTTP request through the host transport so
 // proxy policy and request logging apply. The caller owns Authorization.
-func hostDo(ctx context.Context, callbackID, method, url string, headers map[string][]string, body []byte) (*hostHTTPResponse, error) {
+func hostDo(callbackID, method, url string, headers map[string][]string, body []byte) (*hostHTTPResponse, error) {
 	if callbackID == "" {
 		return nil, fmt.Errorf("host callback id is required for upstream requests")
 	}
@@ -104,7 +103,6 @@ func upstreamError(status int, body []byte) error {
 
 func upstreamErrorDetail(body []byte) string {
 	var parsed struct {
-		Code    int    `json:"code"`
 		Msg     string `json:"msg"`
 		Message string `json:"message"`
 		Error   *struct {

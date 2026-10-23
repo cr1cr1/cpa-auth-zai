@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -181,6 +182,15 @@ func requireHexToken(t *testing.T, value string, length int) {
 
 // Acceptance: login start exchanges a poll token for an upstream authorize URL,
 // returns a 64-hex CPA state, and keeps the poll token out of the URL.
+
+// lookupAuthFlow reads plugin-private login state for assertions; it lives in
+// the test build only because production code must not depend on it.
+func lookupAuthFlow(state string) *loginFlow {
+	flowsMu.Lock()
+	defer flowsMu.Unlock()
+	return flows[state]
+}
+
 func TestLoginStartReturnsURLAndState(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
@@ -196,23 +206,24 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 			t.Fatalf("init Authorization = %v", auth)
 		}
 		requireHexToken(t, strings.TrimPrefix(auth[0], "Bearer "), 64)
-		return authHostEnvelope(200, authInitBody("2026-10-23T19:00:00Z", 2))
+		return authHostEnvelope(200, authInitBody(time.Now().Add(4*time.Minute).UTC().Format(time.RFC3339), 2))
 	})
 	resp := authStart(t)
 	if resp.Provider != providerID || resp.URL != authTestAuthURL {
 		t.Fatalf("start response = %+v", resp)
 	}
 	requireHexToken(t, resp.State, 64)
-	if want := time.Date(2026, 10, 23, 19, 0, 0, 0, time.UTC); !resp.ExpiresAt.Equal(want) {
-		t.Fatalf("ExpiresAt = %v, want %v", resp.ExpiresAt, want)
+	if resp.ExpiresAt.Before(time.Now()) || resp.ExpiresAt.After(time.Now().Add(defaultLoginTTL)) {
+		t.Fatalf("ExpiresAt outside clamp window: %v", resp.ExpiresAt)
 	}
-	if resp.Metadata["flow_id"] != authTestFlowID {
-		t.Fatalf("flow_id = %v", resp.Metadata["flow_id"])
+	if _, present := resp.Metadata["flow_id"]; present {
+		t.Fatalf("flow_id must not reach the browser: %v", resp.Metadata)
 	}
-	pollToken, _ := resp.Metadata["poll_token"].(string)
-	requireHexToken(t, pollToken, 64)
-	if strings.Contains(resp.URL, pollToken) {
-		t.Fatalf("authorize URL must not carry the poll token: %s", resp.URL)
+	if _, present := resp.Metadata["poll_token"]; present {
+		t.Fatalf("poll_token must not reach the browser: %v", resp.Metadata)
+	}
+	if strings.Contains(resp.URL, "poll") || !strings.HasPrefix(resp.URL, "https://") {
+		t.Fatalf("authorize URL must be an https URL without credentials: %s", resp.URL)
 	}
 	if flow := lookupAuthFlow(resp.State); flow == nil || flow.pollInterval != 2*time.Second {
 		t.Fatalf("flow not persisted with upstream interval: %+v", lookupAuthFlow(resp.State))
@@ -224,6 +235,39 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 
 // Acceptance: upstream rejection surfaces a short sanitized message; a long
 // hostile body must not leak past the detail cap.
+
+// Acceptance: upstream expiry parsing handles RFC3339, unix seconds, unix
+// milliseconds, and junk without ever producing a far-future or past flow.
+func TestParseUpstreamExpiryVariants(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name   string
+		value  any
+		wantOK bool
+		wantIn bool // inside a sane (now-1m, now+24h] window
+	}{
+		{"rfc3339", now.Add(3 * time.Minute).UTC().Format(time.RFC3339), true, true},
+		{"unix-seconds", float64(now.Add(2 * time.Minute).Unix()), true, true},
+		{"unix-ms-number", float64(now.Add(2 * time.Minute).UnixMilli()), true, false},
+		{"unix-ms-string", strconv.FormatInt(now.Add(2*time.Minute).UnixMilli(), 10), true, false},
+		{"junk", "not-a-time", false, false},
+		{"empty", "", false, false},
+	}
+	for _, tc := range cases {
+		parsed, ok := parseUpstreamExpiry(tc.value)
+		if ok != tc.wantOK {
+			t.Fatalf("%s: ok = %v, want %v", tc.name, ok, tc.wantOK)
+		}
+		if !tc.wantOK {
+			continue
+		}
+		sane := parsed.After(now.Add(-time.Minute)) && parsed.Before(now.Add(24*time.Hour))
+		if sane != tc.wantIn {
+			t.Fatalf("%s: parsed %v sane=%v, want sane=%v", tc.name, parsed, sane, tc.wantIn)
+		}
+	}
+}
+
 func TestLoginStartUpstreamFailureIsSanitized(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
@@ -269,9 +313,15 @@ func TestLoginPollPending(t *testing.T) {
 	if last.URL != cliPollURL+authTestFlowID {
 		t.Fatalf("poll URL = %s", last.URL)
 	}
-	pollToken, _ := started.Metadata["poll_token"].(string)
-	if want := "Bearer " + pollToken; strings.Join(last.Headers["Authorization"], ",") != want {
-		t.Fatalf("poll Authorization = %v, want %q", last.Headers["Authorization"], want)
+	flow := lookupAuthFlow(started.State)
+	if flow == nil {
+		t.Fatalf("flow missing for state %s", started.State)
+	}
+	if want := "Bearer " + flow.pollToken; strings.Join(last.Headers["Authorization"], ",") != want {
+		t.Fatalf("poll Authorization mismatch: %v", last.Headers["Authorization"])
+	}
+	if want := "Bearer " + flow.pollToken; want == "Bearer " {
+		t.Fatalf("flow poll token empty")
 	}
 }
 
@@ -345,9 +395,12 @@ func TestPollExpiredFlow(t *testing.T) {
 		return authHostEnvelope(500, `{"code":500,"msg":"must not poll"}`)
 	})
 	started := authStart(t)
-	if started.ExpiresAt.After(time.Now()) {
-		t.Fatalf("start accepted a past expiry: %v", started.ExpiresAt)
+	if !started.ExpiresAt.After(time.Now()) {
+		t.Fatalf("start must sanitize a past upstream expiry, got %v", started.ExpiresAt)
 	}
+	flowsMu.Lock()
+	flows[started.State].expiresAt = time.Now().Add(-time.Second)
+	flowsMu.Unlock()
 	resp := authPoll(t, started.State)
 	if resp.Status != pluginapi.AuthLoginStatusError || !strings.Contains(resp.Message, "expired") {
 		t.Fatalf("poll = %+v, want expired error", resp)

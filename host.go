@@ -20,7 +20,11 @@ func installHostCaller(fn func(method string, payload []byte) ([]byte, error)) {
 	hostCaller = fn
 }
 
-func shutdown() {}
+// shutdown runs on plugin unload. The host bridge closes open streams, which
+// ends every async stream pump; waiting here makes the unload clean.
+func shutdown() {
+	streamPumps.Wait()
+}
 
 // callHost performs one host callback and decodes the pluginabi envelope.
 func callHost(method string, payload any) (json.RawMessage, error) {

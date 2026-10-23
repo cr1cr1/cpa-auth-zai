@@ -108,6 +108,26 @@ func sanitizeAuthIDSuffix(id string) string {
 	return strings.Trim(out, "-")
 }
 
+// resolveStorageByIndex loads the persisted credential record for one CPA auth
+// index through the host. Used when the host does not embed storage in the
+// request payload (for example quota.fetch).
+func resolveStorageByIndex(authIndex string) (*zaiStorage, error) {
+	if strings.TrimSpace(authIndex) == "" {
+		return nil, errNoCredentials
+	}
+	result, errGet := callHost("host.auth.get", map[string]string{"auth_index": authIndex})
+	if errGet != nil {
+		return nil, errGet
+	}
+	var record struct {
+		JSON json.RawMessage `json:"json"`
+	}
+	if errUnmarshal := json.Unmarshal(result, &record); errUnmarshal != nil {
+		return nil, fmt.Errorf("zai: decode auth record: %w", errUnmarshal)
+	}
+	return parseZaiStorage(record.JSON)
+}
+
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

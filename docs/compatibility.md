@@ -9,7 +9,7 @@ status: draft
 
 ## Evidence tiers
 
-- **Verified (source):** confirmed in the CPA v8 checkout used for the `replace` directive.
+- **Verified (source):** confirmed in the public CPA v8.0.40 module, matching the previously inspected checkout at tag `v8.0.40`; required SDK packages are vendored.
 - **Verified (user):** confirmed by the operator with a live account request (response fixture).
 - **Verified (live):** exercised against the real CPA v8 docker image (`eceasy/cli-proxy-api:latest`, 2026-10-23) without an account sign-in.
 - **Reported:** third-party reverse-engineering publication; not confirmed by us or by z.ai documentation.

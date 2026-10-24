@@ -8,6 +8,7 @@ golangci-lint = "2.15"
 # Default caches are read-only on some container hosts.
 GOCACHE = "/tmp/cpa-auth-zai-gocache"
 GOMODCACHE = "/tmp/cpa-auth-zai-gomod"
+GOFLAGS = "-mod=vendor"
 
 [tasks.test]
 run = "go test -race ./..."
@@ -16,7 +17,7 @@ run = "go test -race ./..."
 run = "golangci-lint run"
 
 [tasks.fmt]
-run = "gofmt -w ."
+run = "gofmt -w *.go"
 
 [tasks.build]
 run = """

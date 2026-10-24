@@ -4,7 +4,7 @@ A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z
 
 ## Build
 
-[mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). A CPA v8 checkout is required at the relative sibling path `../CLIProxyAPI`; `go.mod` replaces the CPA module with that checkout.
+[mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). All Go dependencies are vendored, including the public CPA v8.0.40 SDK packages. No CPA checkout or Go module download is needed; tasks use `-mod=vendor`.
 
 ```bash
 mise run test   # go test -race ./...

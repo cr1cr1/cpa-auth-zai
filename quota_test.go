@@ -40,11 +40,34 @@ func callResult(t *testing.T, method string, payload []byte) []byte {
 	return envelope.Result
 }
 
+type capturedHostLog struct {
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
+	Fields  map[string]any `json:"fields"`
+}
+
 // swapHostCaller installs a fake host caller for the duration of the test.
 func swapHostCaller(t *testing.T, fn func(method string, payload []byte) ([]byte, error)) {
 	t.Helper()
+	swapHostCallerWithLogs(t, nil, fn)
+}
+
+func swapHostCallerWithLogs(t *testing.T, logs *[]capturedHostLog, fn func(method string, payload []byte) ([]byte, error)) {
+	t.Helper()
 	previous := hostCaller
-	hostCaller = fn
+	hostCaller = func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			if logs != nil {
+				var entry capturedHostLog
+				if errUnmarshal := json.Unmarshal(payload, &entry); errUnmarshal != nil {
+					t.Fatalf("decode host.log payload: %v", errUnmarshal)
+				}
+				*logs = append(*logs, entry)
+			}
+			return hostEnvelope(t, struct{}{}), nil
+		}
+		return fn(method, payload)
+	}
 	t.Cleanup(func() { hostCaller = previous })
 }
 
@@ -399,5 +422,54 @@ func TestQuotaFetchAdvancesOnEnvelope401(t *testing.T) {
 	buckets, ok := result["groups"]
 	if !ok || !strings.Contains(string(buckets), "5h") {
 		t.Fatalf("envelope-401 must advance candidates, got %s", buckets)
+	}
+}
+
+// Acceptance: quota success and terminal failure emit one sanitized CPA log.
+func TestQuotaFetchLogging(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        []byte
+		wantLevel   string
+		wantMessage string
+		wantDetail  string
+	}{
+		{name: "success", status: 200, body: quotaLimitsBody(t, `{"unit":3,"number":5,"percentage":10}`), wantLevel: "info", wantMessage: "succeeded"},
+		{name: "failure", status: 500, body: []byte(`{"msg":"rejected tok-oauth"}`), wantLevel: "warn", wantMessage: "failed", wantDetail: "[redacted]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs []capturedHostLog
+			swapHostCallerWithLogs(t, &logs, func(method string, payload []byte) ([]byte, error) {
+				return upstreamHTTP(t, tc.status, tc.body), nil
+			})
+			callResult(t, pluginabi.MethodQuotaFetch, quotaFetchPayload(t))
+			if len(logs) != 1 || logs[0].Level != tc.wantLevel || !strings.Contains(logs[0].Message, "quota fetch "+tc.wantMessage) {
+				t.Fatalf("quota logs = %+v", logs)
+			}
+			if tc.wantDetail != "" && !strings.Contains(logs[0].Fields["error"].(string), tc.wantDetail) {
+				t.Fatalf("quota error detail = %+v", logs[0].Fields)
+			}
+			raw, _ := json.Marshal(logs)
+			if strings.Contains(string(raw), "tok-oauth") || strings.Contains(string(raw), "tok-biz") {
+				t.Fatalf("quota log leaked a credential: %s", raw)
+			}
+		})
+	}
+}
+
+// Acceptance: an unavailable CPA logger does not change the quota result.
+func TestQuotaFetchIgnoresLoggingFailure(t *testing.T) {
+	previous := hostCaller
+	hostCaller = func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			return nil, errors.New("logger unavailable")
+		}
+		return upstreamHTTP(t, 200, quotaLimitsBody(t, `{"unit":3,"number":5,"percentage":10}`)), nil
+	}
+	t.Cleanup(func() { hostCaller = previous })
+	result := decodeQuotaResult(t, callResult(t, pluginabi.MethodQuotaFetch, quotaFetchPayload(t)))
+	if _, ok := result["groups"]; !ok {
+		t.Fatalf("logging failure changed quota result: %s", result)
 	}
 }

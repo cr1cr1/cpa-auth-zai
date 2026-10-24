@@ -134,6 +134,7 @@ func handleManagementHandle(payload []byte) (any, error) {
 
 	detail, errFetch := fetchUsageDetail(storage, request.HostCallbackID, start, end)
 	if errFetch != nil {
+		hostLog(request.HostCallbackID, "warn", "z.ai usage history failed", map[string]any{"error": errFetch.Error()})
 		return managementError(http.StatusBadGateway, errFetch.Error()), nil
 	}
 	view, errView := buildUsageView(detail, UsageQuery{
@@ -144,5 +145,6 @@ func handleManagementHandle(payload []byte) (any, error) {
 	if errView != nil {
 		return managementError(http.StatusBadRequest, errView.Error()), nil
 	}
+	hostLog(request.HostCallbackID, "info", "z.ai usage history succeeded", nil)
 	return managementJSON(http.StatusOK, view), nil
 }

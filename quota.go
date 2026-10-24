@@ -50,6 +50,7 @@ func handleQuotaDescribe([]byte) (any, error) {
 func handleQuotaFetch(payload []byte) (any, error) {
 	var request quotaRequest
 	if errUnmarshal := json.Unmarshal(payload, &request); errUnmarshal != nil {
+		hostLog("", "warn", "z.ai quota fetch failed", map[string]any{"error": errUnmarshal.Error()})
 		return map[string]any{}, nil
 	}
 	storage, errParse := parseZaiStorage(request.StorageJSON)
@@ -60,17 +61,26 @@ func handleQuotaFetch(payload []byte) (any, error) {
 			storage, errParse = resolveStorageByIndex(request.AuthIndex)
 		}
 		if errParse != nil {
+			hostLog(request.HostCallbackID, "warn", "z.ai quota fetch failed", map[string]any{"error": errParse.Error()})
 			return map[string]any{}, nil
 		}
 	}
 	response, okFetch := tryBearerCandidates(request.HostCallbackID, quotaLimitURL, storage)
 	if !okFetch {
+		detail := "z.ai quota request failed for every stored credential"
+		if response != nil {
+			detail = upstreamError(response.StatusCode, response.Body, storage.bearerCandidates()...).Error()
+		}
+		hostLog(request.HostCallbackID, "warn", "z.ai quota fetch failed", map[string]any{"error": detail})
 		return map[string]any{}, nil
 	}
 	result, errBuild := buildQuotaResponse(response.Body)
 	if errBuild != nil {
+		detail := sanitizeDetail(redactSecrets(errBuild.Error(), storage.bearerCandidates()))
+		hostLog(request.HostCallbackID, "warn", "z.ai quota fetch failed", map[string]any{"error": detail})
 		return map[string]any{}, nil
 	}
+	hostLog(request.HostCallbackID, "info", "z.ai quota fetch succeeded", nil)
 	return result, nil
 }
 

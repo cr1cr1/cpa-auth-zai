@@ -153,11 +153,18 @@ func parseUpstreamExpiry(value any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func handleAuthLoginStart(payload []byte) (any, error) {
+func handleAuthLoginStart(payload []byte) (result any, err error) {
 	var req authStartRequest
 	if errUnmarshal := json.Unmarshal(payload, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode auth.login.start request: %w", errUnmarshal)
 	}
+	defer func() {
+		if err != nil {
+			hostLog(req.HostCallbackID, "error", "z.ai OAuth login start failed", map[string]any{"error": err.Error()})
+			return
+		}
+		hostLog(req.HostCallbackID, "info", "z.ai OAuth login started", nil)
+	}()
 	pollToken, errToken := randomHex(32)
 	if errToken != nil {
 		return nil, errToken
@@ -226,11 +233,31 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 
 // handleAuthLoginPoll applies the rate limit and single-flight gates, then
 // exchanges at most once per flow. The flow is consumed on success only.
-func handleAuthLoginPoll(payload []byte) (any, error) {
+func handleAuthLoginPoll(payload []byte) (result any, err error) {
 	var req authPollRequest
 	if errUnmarshal := json.Unmarshal(payload, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode auth.login.poll request: %w", errUnmarshal)
 	}
+	defer func() {
+		if err != nil {
+			hostLog(req.HostCallbackID, "error", "z.ai OAuth login failed", map[string]any{"error": err.Error()})
+			return
+		}
+		var status pluginapi.AuthLoginStatus
+		var message string
+		switch resp := result.(type) {
+		case pluginapi.AuthLoginPollResponse:
+			status, message = resp.Status, resp.Message
+		case *pluginapi.AuthLoginPollResponse:
+			status, message = resp.Status, resp.Message
+		}
+		switch status {
+		case pluginapi.AuthLoginStatusSuccess:
+			hostLog(req.HostCallbackID, "info", "z.ai OAuth login succeeded", nil)
+		case pluginapi.AuthLoginStatusError:
+			hostLog(req.HostCallbackID, "error", "z.ai OAuth login failed", map[string]any{"error": message})
+		}
+	}()
 	flowsMu.Lock()
 	flow, ok := flows[req.State]
 	if !ok {

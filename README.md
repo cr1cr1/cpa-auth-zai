@@ -48,6 +48,10 @@ Quota and usage history are the active features. Model and executor capabilities
 
 Start the flow from the CPA management UI (provider `zai`) and complete sign-in in your browser — the browser may be on any machine. If z.ai redirects to its hosted callback page, paste the complete callback URL into the CPA login modal. The plugin polls z.ai's hosted login endpoint; no callback port, desktop URI handler, or localhost redirect is required.
 
+## Logging
+
+OAuth and quota/usage success and failure events go through CPA's `host.log` RPC. Pending OAuth polls stay quiet. Credentials are redacted from upstream error details. The plugin does not create a log file; CPA controls log output.
+
 ## Status and evidence tiers
 
 See [docs/compatibility.md](docs/compatibility.md) for the verified/unverified contract table before relying on any single behavior.

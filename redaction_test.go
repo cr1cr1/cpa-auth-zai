@@ -14,7 +14,7 @@ func TestLoginStartRedactsPollToken(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
 	var pollToken string
-	installAuthFakeHost(t, func(call authHostCall) []byte {
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
 		pollToken = strings.TrimPrefix(call.Headers["Authorization"][0], "Bearer ")
 		return authHostEnvelope(401, `{"code":401,"msg":"Bearer `+pollToken+` rejected"}`)
 	})
@@ -27,6 +27,11 @@ func TestLoginStartRedactsPollToken(t *testing.T) {
 	}
 	if strings.Contains(errHandle.Error(), pollToken) || !strings.Contains(errHandle.Error(), "[redacted]") {
 		t.Fatalf("login error did not redact the poll token: %q", errHandle)
+	}
+	logs := fake.recordedLogs()
+	raw, _ := json.Marshal(logs)
+	if len(logs) != 1 || logs[0].Level != "error" || strings.Contains(string(raw), pollToken) || !strings.Contains(string(raw), "[redacted]") {
+		t.Fatalf("login failure log did not redact the poll token: %s", raw)
 	}
 }
 
@@ -55,7 +60,8 @@ func TestExecuteRedactsRejectedCandidate(t *testing.T) {
 // credentials redacted, not only when the decoder is called directly.
 func TestHistoryRedactsUpstreamCredential(t *testing.T) {
 	storageJSON := []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth"}`)
-	swapHostCaller(t, func(method string, payload []byte) ([]byte, error) {
+	var logs []capturedHostLog
+	swapHostCallerWithLogs(t, &logs, func(method string, payload []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostAuthGet:
 			return hostEnvelope(t, map[string]any{"auth_index": "idx-1", "json": json.RawMessage(storageJSON)}), nil
@@ -76,6 +82,10 @@ func TestHistoryRedactsUpstreamCredential(t *testing.T) {
 	status, body := mgmtResult(t, raw)
 	if status != 502 || strings.Contains(string(body), "tok-oauth") || !strings.Contains(string(body), "[redacted]") {
 		t.Fatalf("history response did not redact the credential: status=%d body=%s", status, body)
+	}
+	rawLogs, _ := json.Marshal(logs)
+	if len(logs) != 1 || logs[0].Level != "warn" || strings.Contains(string(rawLogs), "tok-oauth") || !strings.Contains(string(rawLogs), "[redacted]") {
+		t.Fatalf("history failure log did not redact the credential: %s", rawLogs)
 	}
 }
 

@@ -49,6 +49,21 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 	return envelope.Result, nil
 }
 
+type hostLogRequest struct {
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
+	Level          string         `json:"level"`
+	Message        string         `json:"message"`
+	Fields         map[string]any `json:"fields,omitempty"`
+}
+
+// hostLog sends an event to CPA's logger. Logging is best-effort and never
+// changes the result of the operation being logged.
+func hostLog(callbackID, level, message string, fields map[string]any) {
+	_, _ = callHost(pluginabi.MethodHostLog, hostLogRequest{
+		HostCallbackID: callbackID, Level: level, Message: message, Fields: fields,
+	})
+}
+
 // hostHTTPRequest is the wire shape of a host.http.do request. The host
 // response decodes into pluginapi.HTTPResponse-shaped JSON.
 type hostHTTPRequest struct {

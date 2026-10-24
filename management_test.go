@@ -161,7 +161,8 @@ func TestHistoryReturnsFixtureView(t *testing.T) {
 	storageJSON := []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","email":"a@b.c"}`)
 	fixture := usageFixtureBytes(t)
 	var upstreamURL string
-	swapHostCaller(t, func(method string, payload []byte) ([]byte, error) {
+	var logs []capturedHostLog
+	swapHostCallerWithLogs(t, &logs, func(method string, payload []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostAuthGet:
 			var request struct {
@@ -237,6 +238,9 @@ func TestHistoryReturnsFixtureView(t *testing.T) {
 		view.Models[0].Code != "glm-5.3" || view.Models[0].Totals.Total != 43484230 ||
 		view.Models[1].Code != "glm-5.3-flash" || view.Models[1].Totals.Total != 342015 {
 		t.Fatalf("models = %+v", view.Models)
+	}
+	if len(logs) != 1 || logs[0].Level != "info" || !strings.Contains(logs[0].Message, "usage history succeeded") {
+		t.Fatalf("usage history logs = %+v", logs)
 	}
 }
 

@@ -39,6 +39,7 @@ Consequence: per the plan's stop condition, token-only execution stops here. No 
 | Auth start/poll flow through management endpoints | Verified (source) | `internal/api/handlers/management/auth_files_provider_oauth.go` |
 | Manual callback lookup uses the authorize URL `state`; it must match `AuthLoginStartResponse.State` | Verified (source and regression test) 2026-10-24 | `internal/api/handlers/management/oauth_callback.go`; `auth_test.go` |
 | Plugin RPC wire shapes (executor, quota, management) | Verified (source) | `internal/pluginhost/rpc_schema.go`, `rpc_client_stream.go`, `stream_bridge.go`, `host_callbacks.go` |
+| Server logging through `host.log` with request context | Verified (source) | `internal/pluginhost/host_callbacks.go`; no plugin log file is used |
 | Plugin discovery path `plugins/<os>/<arch>/<id>-v<version>.so` | Verified (source) | `internal/pluginhost/platform.go` |
 | Management-authenticated plugin routes; resources are public | Verified (source) | `sdk/pluginapi/types.go` (`ManagementRoute`, `ResourceRoute`) |
 

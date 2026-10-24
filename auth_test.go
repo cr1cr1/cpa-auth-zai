@@ -35,6 +35,7 @@ type authHostCall struct {
 type authFakeHost struct {
 	mu      sync.Mutex
 	calls   []authHostCall
+	logs    []capturedHostLog
 	respond func(authHostCall) []byte
 }
 
@@ -42,6 +43,12 @@ func (f *authFakeHost) recorded() []authHostCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]authHostCall(nil), f.calls...)
+}
+
+func (f *authFakeHost) recordedLogs() []capturedHostLog {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]capturedHostLog(nil), f.logs...)
 }
 
 func (f *authFakeHost) countURL(prefix string) int {
@@ -61,6 +68,16 @@ func installAuthFakeHost(t *testing.T, respond func(authHostCall) []byte) *authF
 	fake := &authFakeHost{respond: respond}
 	prev := hostCaller
 	hostCaller = func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			var entry capturedHostLog
+			if errUnmarshal := json.Unmarshal(payload, &entry); errUnmarshal != nil {
+				return nil, errUnmarshal
+			}
+			fake.mu.Lock()
+			fake.logs = append(fake.logs, entry)
+			fake.mu.Unlock()
+			return hostEnvelope(t, struct{}{}), nil
+		}
 		var req hostHTTPRequest
 		if errUnmarshal := json.Unmarshal(payload, &req); errUnmarshal != nil {
 			return nil, errUnmarshal
@@ -242,6 +259,10 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 	if fake.countURL(cliInitURL) != 1 {
 		t.Fatalf("init calls = %d, want 1", fake.countURL(cliInitURL))
 	}
+	logs := fake.recordedLogs()
+	if len(logs) != 1 || logs[0].Level != "info" || !strings.Contains(logs[0].Message, "OAuth login started") {
+		t.Fatalf("login start logs = %+v", logs)
+	}
 }
 
 // Acceptance: upstream rejection surfaces a short sanitized message; a long
@@ -334,6 +355,9 @@ func TestLoginPollPending(t *testing.T) {
 	if want := "Bearer " + flow.pollToken; want == "Bearer " {
 		t.Fatalf("flow poll token empty")
 	}
+	if logs := fake.recordedLogs(); len(logs) != 1 {
+		t.Fatalf("pending poll must stay quiet; logs = %+v", logs)
+	}
 }
 
 // Acceptance: an empty upstream failure retains the HTTP status needed to
@@ -341,7 +365,7 @@ func TestLoginPollPending(t *testing.T) {
 func TestLoginPollEmptyFailureIncludesStatus(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
-	installAuthFakeHost(t, func(call authHostCall) []byte {
+	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
 		if call.URL == cliInitURL {
 			return authHostEnvelope(200, authInitBody(nil, 0))
 		}
@@ -352,6 +376,10 @@ func TestLoginPollEmptyFailureIncludesStatus(t *testing.T) {
 	if resp.Status != pluginapi.AuthLoginStatusError || !strings.Contains(resp.Message, "502") {
 		t.Fatalf("poll = %+v, want error containing HTTP 502", resp)
 	}
+	logs := fake.recordedLogs()
+	if len(logs) != 2 || logs[1].Level != "error" || !strings.Contains(logs[1].Fields["error"].(string), "502") {
+		t.Fatalf("failed poll logs = %+v", logs)
+	}
 }
 
 // Acceptance: a ready poll exchanges once, stores oauth+zcode+biz tokens with
@@ -359,7 +387,7 @@ func TestLoginPollEmptyFailureIncludesStatus(t *testing.T) {
 func TestLoginPollSuccess(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
-	authLoginRoutes(t, func() string { return authReadyBody() })
+	fake := authLoginRoutes(t, func() string { return authReadyBody() })
 	started := authStart(t)
 	resp := authPoll(t, started.State)
 	if resp.Status != pluginapi.AuthLoginStatusSuccess {
@@ -392,6 +420,10 @@ func TestLoginPollSuccess(t *testing.T) {
 	}
 	if again := authPoll(t, started.State); again.Status != pluginapi.AuthLoginStatusError {
 		t.Fatalf("replay poll status = %q, want error (flow must be consumed)", again.Status)
+	}
+	logs := fake.recordedLogs()
+	if len(logs) != 3 || logs[1].Level != "info" || !strings.Contains(logs[1].Message, "OAuth login succeeded") {
+		t.Fatalf("successful login logs = %+v", logs)
 	}
 }
 

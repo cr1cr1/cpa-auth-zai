@@ -40,7 +40,7 @@ plugins:
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
 | `model_provider` | Live Coding Plan catalog from `api.z.ai/api/coding/paas/v4/models`, using the business token derived from OAuth login. No fixed-model fallback. |
-| `executor` | OAuth-only chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`. Live inference remains unverified after earlier provider-side token rejections. |
+| `executor` | Login-token chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`. Sends the bearer candidate and separate `X-Zcode-Token` header; no API key. Live inference remains unverified after earlier provider-side token rejections and an HTTP 500 before the combined-header change. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 

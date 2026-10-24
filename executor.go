@@ -128,7 +128,7 @@ func handleExecute(payload []byte) (any, error) {
 	candidates := storage.bearerCandidates()
 	var response *hostHTTPResponse
 	for index, candidate := range candidates {
-		attempt, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(candidate), request.Payload)
+		attempt, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(candidate, storage.ZcodeJWT), request.Payload)
 		if errCall != nil {
 			return nil, errCall
 		}
@@ -174,7 +174,7 @@ func handleExecuteStream(payload []byte) (any, error) {
 	var stream *hostHTTPStreamStart
 	candidateIndex := 0
 	for index, candidate := range candidates {
-		start, errOpen := openUpstreamStream(request, candidate)
+		start, errOpen := openUpstreamStream(request, candidate, storage.ZcodeJWT)
 		if errOpen != nil {
 			return nil, errOpen
 		}
@@ -192,17 +192,17 @@ func handleExecuteStream(payload []byte) (any, error) {
 	// A rejected stream can answer 2xx with an envelope in the first chunk;
 	// the pump applies the same candidate fallback before emitting any bytes.
 	streamPumps.Add(1)
-	go pumpUpstreamStream(request, candidates, candidateIndex, stream)
+	go pumpUpstreamStream(request, candidates, candidateIndex, storage.ZcodeJWT, stream)
 	return executorStreamResponse{Headers: map[string][]string{"Content-Type": {"text/event-stream"}}}, nil
 }
 
-func openUpstreamStream(request *executorRequest, candidate string) (*hostHTTPStreamStart, error) {
+func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*hostHTTPStreamStart, error) {
 	result, errCall := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
 		HostCallbackID: request.HostCallbackID,
 		Request: hostHTTPRequestSpec{
 			Method:  "POST",
 			URL:     codingChatCompletionsURL,
-			Headers: codingRequestHeaders(candidate),
+			Headers: codingRequestHeaders(candidate, zcodeJWT),
 			Body:    request.Payload,
 		},
 	})
@@ -219,7 +219,7 @@ func openUpstreamStream(request *executorRequest, candidate string) (*hostHTTPSt
 // pumpUpstreamStream relays raw upstream SSE bytes from the host HTTP stream
 // (httpStreamID) to the plugin RPC stream (rpcStreamID). The two ids belong to
 // different bridges and must not be swapped. Chunks are forwarded unmodified.
-func pumpUpstreamStream(request *executorRequest, candidates []string, candidateIndex int, stream *hostHTTPStreamStart) {
+func pumpUpstreamStream(request *executorRequest, candidates []string, candidateIndex int, zcodeJWT string, stream *hostHTTPStreamStart) {
 	defer streamPumps.Done()
 	rpcStreamID := request.StreamID
 	pending := []byte{}
@@ -260,7 +260,7 @@ func pumpUpstreamStream(request *executorRequest, candidates []string, candidate
 				return
 			}
 			for candidateIndex++; candidateIndex < len(candidates); candidateIndex++ {
-				next, errOpen := openUpstreamStream(request, candidates[candidateIndex])
+				next, errOpen := openUpstreamStream(request, candidates[candidateIndex], zcodeJWT)
 				if errOpen != nil {
 					failRPCStream(rpcStreamID, sanitizeDetail(errOpen.Error()))
 					return
@@ -371,13 +371,18 @@ func businessEnvelopeFailed(body []byte) bool {
 	return code != "" && code != "0" && code != "200"
 }
 
-// codingRequestHeaders builds the fixed upstream header set for one candidate.
-func codingRequestHeaders(bearer string) map[string][]string {
-	return map[string][]string{
+// codingRequestHeaders pairs the bearer candidate with the separate ZCode
+// token used by the ZCode client. It never substitutes one token for the other.
+func codingRequestHeaders(bearer, zcodeJWT string) map[string][]string {
+	headers := map[string][]string{
 		"Content-Type":  {"application/json"},
 		"Accept":        {"application/json"},
 		"Authorization": {"Bearer " + bearer},
 	}
+	if token := strings.TrimSpace(zcodeJWT); token != "" {
+		headers["X-Zcode-Token"] = []string{token}
+	}
+	return headers
 }
 
 // upstreamStatusError maps a non-2xx upstream response into a client-visible

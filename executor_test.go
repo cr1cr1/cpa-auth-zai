@@ -137,7 +137,7 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	request := testJSON(t, map[string]any{
 		"AuthID": "zai-test", "AuthProvider": "zai", "Model": "glm-5.3",
 		"Stream":           false,
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","biz_access_token":"tok-biz"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","biz_access_token":"tok-biz","zcode_jwt":"tok-zcode"}`),
 		"Payload":          payload,
 		"host_callback_id": "cb-1",
 	})
@@ -168,6 +168,9 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	if got := doRequest.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer tok-oauth" {
 		t.Fatalf("Authorization = %v, want first candidate", got)
 	}
+	if got := doRequest.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
+		t.Fatalf("X-Zcode-Token = %v, want the login-derived ZCode JWT", got)
+	}
 
 	var response struct {
 		Payload  []byte              `json:"Payload"`
@@ -180,6 +183,15 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	}
 	if got := response.Headers["Content-Type"]; len(got) != 1 || got[0] != "application/json" {
 		t.Fatalf("response headers = %v", response.Headers)
+	}
+}
+
+func TestCodingRequestHeadersOmitsBlankZcodeToken(t *testing.T) {
+	for _, token := range []string{"", " \n"} {
+		headers := codingRequestHeaders("tok-oauth", token)
+		if _, exists := headers["X-Zcode-Token"]; exists {
+			t.Fatalf("blank ZCode JWT %q must not produce X-Zcode-Token: %v", token, headers)
+		}
 	}
 }
 
@@ -278,6 +290,11 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		switch call.Method {
 		case pluginabi.MethodHostHTTPDoStream:
+			var upstream hostHTTPRequest
+			testDecode(t, call.Payload, &upstream)
+			if got := upstream.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
+				t.Fatalf("X-Zcode-Token = %v, want the login-derived ZCode JWT", got)
+			}
 			return map[string]any{"status_code": 200, "stream_id": "h1"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
 			switch index {
@@ -293,7 +310,7 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","zcode_jwt":"tok-zcode"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r1", "host_callback_id": "cb-1",
 	})
@@ -742,6 +759,11 @@ func TestExecuteStreamBearerFallbackOnEnvelope401(t *testing.T) {
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		switch call.Method {
 		case pluginabi.MethodHostHTTPDoStream:
+			var upstream hostHTTPRequest
+			testDecode(t, call.Payload, &upstream)
+			if got := upstream.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
+				t.Errorf("X-Zcode-Token = %v on stream attempt %d", got, doStreamCalls+1)
+			}
 			doStreamCalls++
 			if doStreamCalls == 1 {
 				return map[string]any{"status_code": 200, "stream_id": "h-envelope-reject"}, nil
@@ -759,7 +781,7 @@ func TestExecuteStreamBearerFallbackOnEnvelope401(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b","zcode_jwt":"tok-zcode"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-envelope-fallback", "host_callback_id": "cb-envelope-fallback",
 	})

@@ -30,6 +30,12 @@ Completed a real hosted sign-in against the disposable CPA container and verifie
 
 Consequence: no API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified. After the operator explicitly instructed the project to assume OAuth-token inference works, [issue 0010](issues/0010-enable-oauth-models.md) re-enabled model and executor registration. The existing handlers are unit-tested; no new live inference success is claimed. A new live completion remains necessary to resolve the earlier provider-side rejection evidence.
 
+## Live executor routing (2026-10-25)
+
+The operator confirmed that the provider-returned model catalog appears in CPA. An initial execution attempt selected CPA's native OpenAI-compatible executor because the active configuration also had an `openai-compatibility` entry named `zai`; its local `missing provider baseURL` error produced a generic invalid-API-key response. The operator removed that conflicting entry and restarted CPA.
+
+The next `glm-5.3` attempt reached the upstream execution path and failed after 837 ms with HTTP 500 `Internal Server Error`. [Issue 0012](issues/0012-send-zcode-token-for-inference.md) adds the separate `X-Zcode-Token` header used by the known ZCode client. The combined-header request has not yet been live-tested, so inference remains unverified.
+
 ## CPA contracts
 
 | Contract | Tier | Source |
@@ -51,6 +57,7 @@ Consequence: no API-key fallback was added. Quota and usage management (goal 2) 
 | Usage-detail endpoint `GET /api/monitor/token-usage/usage-detail?usageType=MODEL&type=1` returns the documented JSON envelope | Verified (user) — fixture `testdata/usage-detail.json` | History view breaks; decode errors surface as management 502 |
 | Monitor endpoints authorize with the **business** token; session token rejected (envelope 401 in HTTP 200) | Verified (live) 2026-10-24 | Handled: envelope-aware bearer fallback |
 | Login tokens authorize model inference (coding, anthropic, ultra-proxy paths) | **Fails — verified (live) 2026-10-24** | Executor wired and routing correctly; upstream refuses the credential class; no fallback by design |
+| Inference sends `X-Zcode-Token` with each bearer candidate | Reported by the third-party ZCode client; implemented in [issue 0012](issues/0012-send-zcode-token-for-inference.md), **live unverified** | Upstream may continue to reject login-token inference; no API-key fallback is added |
 | Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling, including ready completion | **Verified (live)** 2026-10-24 gated run | Sign-in fails with a sanitized error; no fallback exists by design |
 | Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | **Verified (live)** 2026-10-24 gated run | Monitor endpoints require the business token; envelope-aware bearer fallback handles rejected candidates |
 | `quota/limit` response shape (unit/number window rows, percentage, nextResetTime) | Reported ([OpenUsage](https://openusage.sh/docs/providers/zai/)) | Quota buckets stay absent (unknown), summary empty |

@@ -28,7 +28,7 @@ Completed a real hosted sign-in against the disposable CPA container and verifie
 | Live history through CPA | **pass** — totals match the user's known usage (GLM-5.3 43,484,230); `history-timezone: Europe/Bucharest` config field applied (`2026-10-19T19:00+03:00 → 2026-10-20T19:00+03:00` boundaries) |
 | Token-only model inference | **fails — provider-side.** Coding endpoint, Anthropic endpoint, and zcode ultra-proxy all reject every login token (HTTP 200 envelope `code 1234 "Network error"`, or 401). Model routing and credential selection were exercised; the upstream refuses the credential class. |
 
-Consequence: per the plan's stop condition, token-only execution stops here. No API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified. Model and executor registration is disabled until a live token-only completion passes. Later executor error-handling fixes are unit-tested only and make no new live inference claim. Operators who already hold an API key can keep using CPA's own `openai-compatibility` z.ai entry alongside this plugin — no key is created, stored, or required by the plugin.
+Consequence: no API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified. After the operator explicitly instructed the project to assume OAuth-token inference works, [issue 0010](issues/0010-enable-oauth-models.md) re-enabled model and executor registration. The existing handlers are unit-tested; no new live inference success is claimed. A new live completion remains necessary to resolve the earlier provider-side rejection evidence.
 
 ## CPA contracts
 

@@ -37,4 +37,4 @@ Final gates passed on 2026-10-24:
 - `go list -m` resolved CPA to the sibling `../CLIProxyAPI` checkout
 - Final ponytail review found no remaining concrete blocker
 
-No new live z.ai inference claim is made. Model and executor registration remains disabled pending a successful live token-only completion.
+No new live z.ai inference claim was made in this issue. Its registration stop was later superseded by [issue 0010](0010-enable-oauth-models.md) under an explicit operator assumption; the earlier provider-side rejection evidence remains unchanged.

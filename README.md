@@ -1,6 +1,6 @@
 # cpa-auth-zai
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in and quota/usage history. Model execution is disabled because z.ai rejects login tokens for inference. Login-derived tokens only — the plugin never creates or uses API keys.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, chat-completions execution, and quota/usage history. Login-derived tokens only — the plugin never creates or uses API keys.
 
 ## Build
 
@@ -36,11 +36,11 @@ plugins:
 
 ## Active features
 
-Quota and usage history are the active features. Model and executor capabilities are not registered while z.ai rejects login tokens for inference.
-
 | Capability | Detail |
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
+| `model_provider` | Per-account `glm-5.3` and `glm-5.3-flash` catalog from the official GLM Coding Plan model set. |
+| `executor` | OAuth-only chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`. Live inference remains unverified after earlier provider-side token rejections. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 

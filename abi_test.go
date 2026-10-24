@@ -9,10 +9,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
-// Acceptance: token-only inference is blocked upstream, so registration must
-// not advertise model or executor capabilities. Schema version 6 keeps
-// management JSON unescaped.
-func TestRegistrationBlocksTokenOnlyInference(t *testing.T) {
+// Acceptance: OAuth credentials expose account models and chat-completions
+// execution. Schema version 6 keeps management JSON unescaped.
+func TestRegistrationExposesOAuthProvider(t *testing.T) {
 	raw, errHandle := handleCall("plugin.register", []byte("{}"))
 	if errHandle != nil {
 		t.Fatalf("plugin.register failed: %v", errHandle)
@@ -38,17 +37,18 @@ func TestRegistrationBlocksTokenOnlyInference(t *testing.T) {
 	if registration.Metadata.Name != "Z.AI" || registration.Metadata.Version == "" {
 		t.Fatalf("metadata = %+v", registration.Metadata)
 	}
-	for _, capability := range []string{"auth_provider", "quota_provider", "management_api"} {
+	for _, capability := range []string{"auth_provider", "model_provider", "executor", "quota_provider", "management_api"} {
 		if registration.Capabilities[capability] != true {
 			t.Fatalf("capability %s not declared: %v", capability, registration.Capabilities)
 		}
 	}
-	if _, advertised := registration.Capabilities["model_provider"]; advertised {
-		t.Fatalf("model_provider advertised while token-only inference is blocked: %v", registration.Capabilities)
+	if got := registration.Capabilities["executor_model_scope"]; got != "oauth" {
+		t.Fatalf("executor_model_scope = %v, want oauth", got)
 	}
-	for capability := range registration.Capabilities {
-		if capability == "executor" || strings.HasPrefix(capability, "executor_") {
-			t.Fatalf("executor capability %q advertised while token-only inference is blocked: %v", capability, registration.Capabilities)
+	for _, key := range []string{"executor_input_formats", "executor_output_formats"} {
+		formats, ok := registration.Capabilities[key].([]any)
+		if !ok || len(formats) != 1 || formats[0] != "chat-completions" {
+			t.Fatalf("%s = %v, want [chat-completions]", key, registration.Capabilities[key])
 		}
 	}
 }

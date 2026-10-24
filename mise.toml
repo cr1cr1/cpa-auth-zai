@@ -1,0 +1,33 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[tools]
+go = "1.27"
+golangci-lint = "2.15"
+
+[env]
+# Default caches are read-only on some container hosts.
+GOCACHE = "/tmp/cpa-auth-zai-gocache"
+GOMODCACHE = "/tmp/cpa-auth-zai-gomod"
+
+[tasks.test]
+run = "go test -race ./..."
+
+[tasks.lint]
+run = "golangci-lint run"
+
+[tasks.fmt]
+run = "gofmt -w ."
+
+[tasks.build]
+run = """
+set -e
+CGO_ENABLED=1 go build -buildmode=c-shared -o dist/cpa-auth-zai.so .
+rm -f dist/cpa-auth-zai.h
+"""
+
+[tasks.install]
+description = "Copy the plugin .so into the CPA plugins directory (override with PLUGIN_DIR=...)"
+run = "install -m 0755 dist/cpa-auth-zai.so \"${PLUGIN_DIR:-/home/cri/.config/containers/cli-proxy-api/plugins/linux/amd64}/cpa-auth-zai-v0.1.0.so\""
+
+[tasks.clean]
+run = "rm -rf dist"

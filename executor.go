@@ -132,7 +132,8 @@ func handleExecute(payload []byte) (any, error) {
 			return nil, errCall
 		}
 		response = attempt
-		if !isAuthReject(attempt.StatusCode) && !(attempt.StatusCode >= 200 && attempt.StatusCode < 300 && envelopeAuthRejected(attempt.Body)) {
+		envelopeReject := attempt.StatusCode >= 200 && attempt.StatusCode < 300 && envelopeAuthRejected(attempt.Body)
+		if !isAuthReject(attempt.StatusCode) && !envelopeReject {
 			break
 		}
 		if index == len(candidates)-1 {

@@ -4,17 +4,16 @@ A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z
 
 ## Build
 
-Requires Go 1.26+ with cgo and a local CPA v8 checkout (see `go.mod` `replace`).
+[mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). Requires a local CPA v8 checkout (see `go.mod` `replace`).
 
 ```bash
-export GOCACHE=$(mktemp -d)   # if the default cache is read-only
-go test ./...
-CGO_ENABLED=1 go build -buildmode=c-shared -o dist/cpa-auth-zai.so .
+mise run test   # go test -race ./...
+mise run build  # dist/cpa-auth-zai.so
 ```
 
 ## Install (Linux amd64)
 
-Copy the library into CPA's plugin directory using the ID-version naming rule:
+Copy the library into CPA's plugin directory using the ID-version naming rule (`mise run install` does this; override the target with `PLUGIN_DIR=... mise run install`):
 
 ```
 plugins/linux/amd64/cpa-auth-zai-v0.1.0.so

@@ -15,20 +15,20 @@ status: draft
 - **Reported:** third-party reverse-engineering publication; not confirmed by us or by z.ai documentation.
 - **Unverified:** assumed for design; must be confirmed by a live gated check before being trusted.
 
-## Live integration evidence (2026-10-23)
+## Live gated run (2026-10-24, real account)
 
-Disposable sibling of the operator's `cli-proxy-api` container (same image), isolated config/auth/plugins:
+Completed a real hosted sign-in against the disposable CPA container and verified with live account data:
 
 | Check | Result |
 |---|---|
-| Plugin load + registration in real CPA v8 binary | pass (`pluginhost: plugin registered plugin_id=cpa-auth-zai`) |
-| Management API shows `supports_oauth`/`oauth_provider=zai`, `supports_quota`/`quota_provider=zai` | pass |
-| `GET /v8/management/oauth/auth-url?provider=zai` against live z.ai | pass — hosted init accepted; real `chat.z.ai/api/oauth/authorize` URL returned |
-| Login poll without sign-in | pass — `{"status":"wait"}`; session cancel + terminal state clean |
-| History endpoint without params / public exposure | pass — 400; `/v0/resource/...` → 404 (not public) |
-| Quota for unknown auth_index | pass — 404 `auth not found` |
-| Unauthenticated management access | pass — 401 |
-| Poll → success (needs account sign-in), executor/quota/history with real credentials | **pending operator-gated run** |
+| Hosted sign-in → credential persisted (`zai-cristi-chiru-gmail-com.json`) | **pass** — ready in ~20 s / 4 polls |
+| Storage contents | `biz_access_token` (long-lived HS512), short-lived `oauth_access_token`, `zcode_jwt`, email, user id — no API key touched |
+| Monitor endpoints (`quota/limit`, `usage-detail`) authorize with… | **the business token**; the OAuth session token and zcode JWT are rejected with envelope `code: 401 "token expired or incorrect"` inside HTTP 200 |
+| Live quota through CPA | **pass** — 5-hour window 96% remaining (reset same-day 12:31 UTC), 7-day 98% (reset Oct 30); the envelope-401 candidate fallback proved necessary and works |
+| Live history through CPA | **pass** — totals match the user's known usage (GLM-5.3 43,484,230); `history-timezone: Europe/Bucharest` config field applied (`2026-10-19T19:00+03:00 → 2026-10-20T19:00+03:00` boundaries) |
+| Token-only model inference | **fails — provider-side.** Coding endpoint, Anthropic endpoint, and zcode ultra-proxy all reject every login token (HTTP 200 envelope `code 1234 "Network error"`, or 401). Model routing, credential selection, and error surfacing through CPA verified correct; the upstream refuses the credential class. |
+
+Consequence: per the plan's stop condition, token-only execution stops here. No API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified; model inference through this plugin waits for z.ai to accept login-token authorization on a model endpoint. Operators who already hold an API key can keep using CPA's own `openai-compatibility` z.ai entry alongside this plugin — no key is created, stored, or required by the plugin.
 
 ## CPA contracts
 
@@ -46,8 +46,8 @@ Disposable sibling of the operator's `cli-proxy-api` container (same image), iso
 | Contract | Tier | Consequence if wrong |
 |---|---|---|
 | Usage-detail endpoint `GET /api/monitor/token-usage/usage-detail?usageType=MODEL&type=1` returns the documented JSON envelope | Verified (user) — fixture `testdata/usage-detail.json` | History view breaks; decode errors surface as management 502 |
-| Login token authorizes the monitor endpoints | Unverified | Quota/history return empty (`{}`) or 401-based fallbacks |
-| Login token authorizes `POST /api/coding/paas/v4/chat/completions` | Unverified | Model requests fail 401; surfaced as client 401, never replaced by API-key fallback |
+| Monitor endpoints authorize with the **business** token; session token rejected (envelope 401 in HTTP 200) | Verified (live) 2026-10-24 | Handled: envelope-aware bearer fallback |
+| Login tokens authorize model inference (coding, anthropic, ultra-proxy paths) | **Fails — verified (live) 2026-10-24** | Executor wired and routing correctly; upstream refuses the credential class; no fallback by design |
 | Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling | init + pending poll **verified (live)**; ready-completion path remains reported ([PROTOCOL.md](https://cdn.jsdelivr.net/npm/pi-zcode-provider@0.1.0/PROTOCOL.md)) | Sign-in fails with a sanitized error; no fallback exists by design |
 | Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | Reported | Only the short-lived OAuth token is available for upstream calls |
 | `quota/limit` response shape (unit/number window rows, percentage, nextResetTime) | Reported ([OpenUsage](https://openusage.sh/docs/providers/zai/)) | Quota buckets stay absent (unknown), summary empty |

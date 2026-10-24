@@ -79,7 +79,8 @@ func handleQuotaReset([]byte) (any, error) {
 }
 
 // tryBearerCandidates GETs url once per bearer candidate, advancing only on
-// upstream 401/403, and stops at the first 2xx. ok=false means the endpoint
+// upstream 401/403 — at HTTP level or wrapped in a 200 envelope (live-verified
+// z.ai behavior) — advances to the next candidate. ok=false means the endpoint
 // failed entirely; resp is non-nil when a non-2xx upstream answer caused it.
 func tryBearerCandidates(callbackID, url string, storage *zaiStorage) (*hostHTTPResponse, bool) {
 	for _, token := range storage.bearerCandidates() {
@@ -91,6 +92,8 @@ func tryBearerCandidates(callbackID, url string, storage *zaiStorage) (*hostHTTP
 		switch {
 		case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
 			continue
+		case response.StatusCode >= 200 && response.StatusCode < 300 && envelopeAuthRejected(response.Body):
+			continue
 		case response.StatusCode >= 200 && response.StatusCode < 300:
 			return response, true
 		default:
@@ -98,6 +101,23 @@ func tryBearerCandidates(callbackID, url string, storage *zaiStorage) (*hostHTTP
 		}
 	}
 	return nil, false
+}
+
+// envelopeAuthRejected reports a 200 body whose business envelope carries an
+// authentication rejection.
+func envelopeAuthRejected(body []byte) bool {
+	var envelope struct {
+		Code    flexNumber `json:"code"`
+		Success *bool      `json:"success"`
+		Msg     string     `json:"msg"`
+	}
+	if errUnmarshal := json.Unmarshal(body, &envelope); errUnmarshal != nil {
+		return false
+	}
+	if envelope.Success != nil && !*envelope.Success && strings.Contains(strings.ToLower(envelope.Msg), "token") {
+		return true
+	}
+	return envelope.Code.String() == "401" || envelope.Code.String() == "403"
 }
 
 // flexNumber accepts a JSON number or a decimal string; both decode into a

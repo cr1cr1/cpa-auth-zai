@@ -132,12 +132,18 @@ func handleExecute(payload []byte) (any, error) {
 			return nil, errCall
 		}
 		response = attempt
-		if !isAuthReject(attempt.StatusCode) || index == len(candidates)-1 {
+		if !isAuthReject(attempt.StatusCode) && !(attempt.StatusCode >= 200 && attempt.StatusCode < 300 && envelopeAuthRejected(attempt.Body)) {
+			break
+		}
+		if index == len(candidates)-1 {
 			break
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, upstreamStatusError(response.StatusCode, response.Body)
+	}
+	if envelopeAuthRejected(response.Body) {
+		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body), http.StatusUnauthorized)
 	}
 	return executorResponse{
 		Payload: response.Body,
@@ -188,6 +194,8 @@ func handleExecuteStream(payload []byte) (any, error) {
 		closeHTTPStream(stream.StreamID)
 		return nil, upstreamStatusError(stream.StatusCode, nil)
 	}
+	// A rejected stream still answers 2xx with envelope code 401/403 in the
+	// first chunk; the pump surfaces it through failRPCStream.
 	streamPumps.Add(1)
 	go pumpUpstreamStream(request.StreamID, stream.StreamID)
 	return executorStreamResponse{Headers: map[string][]string{"Content-Type": {"text/event-stream"}}}, nil

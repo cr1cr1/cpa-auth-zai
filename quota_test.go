@@ -379,3 +379,25 @@ func TestQuotaFetchAcceptsStringNumbers(t *testing.T) {
 		t.Fatalf("remainingFraction = %v, want ~0.658", got)
 	}
 }
+
+// Acceptance: a 200 body whose envelope carries code 401 must advance to the
+// next bearer candidate — live z.ai rejects the short-lived session token this
+// way while the long-lived business token authorizes.
+func TestQuotaFetchAdvancesOnEnvelope401(t *testing.T) {
+	calls := 0
+	swapHostCaller(t, func(method string, payload []byte) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return upstreamHTTP(t, 200, []byte(`{"code":401,"msg":"token expired or incorrect","success":false}`)), nil
+		}
+		return upstreamHTTP(t, 200, []byte(`{"code":200,"success":true,"msg":"ok","data":{"limits":[{"unit":3,"number":5,"percentage":34.2}]}}`)), nil
+	})
+	result := decodeQuotaResult(t, callResult(t, pluginabi.MethodQuotaFetch, quotaFetchPayload(t)))
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	buckets, ok := result["groups"]
+	if !ok || !strings.Contains(string(buckets), "5h") {
+		t.Fatalf("envelope-401 must advance candidates, got %s", buckets)
+	}
+}

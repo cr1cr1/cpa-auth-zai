@@ -17,4 +17,4 @@ Implemented and integration-tested (2026-10-23). The plugin builds as `cpa-auth-
 
 ## Completion
 
-Remaining before closing: one operator-gated account run (complete a sign-in, then verify token-only model execution, quota windows, and history) plus confirmation that the login token authorizes each endpoint. A working quota reader alone does not close this issue.
+Gated run done (2026-10-24): sign-in, quota windows, and history verified live against the real account. Remaining before closing: z.ai does not authorize model inference with login tokens on any known endpoint (coding, anthropic, ultra-proxy all refuse the credential class) — the plan stop condition fired. Goal 2 (quota/usage management) is complete; goal 1 stays open pending either z.ai enabling login-token inference or an explicit operator decision to relax the no-API-key constraint.

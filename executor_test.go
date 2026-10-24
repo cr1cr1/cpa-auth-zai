@@ -658,3 +658,58 @@ func TestExecuteStreamEmitFailureCloses(t *testing.T) {
 		t.Fatalf("emit failure did not close the rpc stream with an error")
 	}
 }
+
+// Acceptance: the coding endpoint can wrap auth rejection in HTTP 200; the
+// executor must advance candidates and only then surface the 401.
+func TestExecuteAdvancesOnEnvelope401(t *testing.T) {
+	doCalls := 0
+	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		if call.Method == pluginabi.MethodHostHTTPDo {
+			doCalls++
+			if doCalls == 1 {
+				return hostHTTPResponse{StatusCode: 200, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{"code":401,"msg":"token expired or incorrect","success":false}`)}, nil
+			}
+			return hostHTTPResponse{StatusCode: 200, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{"id":"x","choices":[]}`)}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider":     "zai",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":          []byte(`{"model":"glm-5.3"}`),
+		"host_callback_id": "cb-env",
+	})
+	raw, errHandle := handleCall(pluginabi.MethodExecutorExecute, request)
+	if errHandle != nil {
+		t.Fatalf("second candidate should succeed: %v (%s)", errHandle, raw)
+	}
+	if doCalls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", doCalls)
+	}
+}
+
+// Acceptance: when every candidate is envelope-rejected, the executor
+// surfaces HTTP 401 for CPA's client mapping.
+func TestExecuteEnvelope401SurfacesUnauthorized(t *testing.T) {
+	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		if call.Method == pluginabi.MethodHostHTTPDo {
+			return hostHTTPResponse{StatusCode: 200, Body: []byte(`{"code":401,"msg":"token expired or incorrect","success":false}`)}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider":     "zai",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a"}`),
+		"Payload":          []byte(`{"model":"glm-5.3"}`),
+		"host_callback_id": "cb-env2",
+	})
+	_, errHandle := handleCall(pluginabi.MethodExecutorExecute, request)
+	if errHandle == nil {
+		t.Fatalf("all-rejected execute must fail")
+	}
+	type statusCoder interface{ StatusCode() int }
+	var sc statusCoder
+	if !errors.As(errHandle, &sc) || sc.StatusCode() != 401 {
+		t.Fatalf("error should carry 401, got %v", errHandle)
+	}
+}

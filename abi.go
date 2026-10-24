@@ -62,6 +62,11 @@ func registration() map[string]any {
 				"Type":        pluginapi.ConfigFieldTypeString,
 				"Default":     "",
 				"Description": "IANA timezone for usage-history display when the request omits timezone; empty uses the provider's source timezone.",
+			}, {
+				"Name":        "api-key-name",
+				"Type":        pluginapi.ConfigFieldTypeString,
+				"Default":     "cpa-auth-zai",
+				"Description": "Exact z.ai project API-key name to reuse or create during login.",
 			}},
 		},
 		"capabilities": map[string]any{

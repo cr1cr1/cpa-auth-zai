@@ -34,7 +34,9 @@ Consequence: no API-key fallback was added. Quota and usage management (goal 2) 
 
 The operator confirmed that the provider-returned model catalog appears in CPA. An initial execution attempt selected CPA's native OpenAI-compatible executor because the active configuration also had an `openai-compatibility` entry named `zai`; its local `missing provider baseURL` error produced a generic invalid-API-key response. The operator removed that conflicting entry and restarted CPA.
 
-The next `glm-5.3` attempt reached the upstream execution path and failed after 837 ms with HTTP 500 `Internal Server Error`. [Issue 0012](issues/0012-send-zcode-token-for-inference.md) adds the separate `X-Zcode-Token` header used by the known ZCode client. The combined-header request has not yet been live-tested, so inference remains unverified.
+The next `glm-5.3` attempt reached the upstream execution path and failed after 837 ms with HTTP 500 `Internal Server Error`. [Issue 0012](issues/0012-send-zcode-token-for-inference.md) added the separate `X-Zcode-Token` header used by the known ZCode client. A later minimal non-streaming request with that header still failed with the z.ai error ID `20261025062312a301da0c74d44317`. This ruled out DSH tools and payload translation as the cause and confirmed that the combined login-token header did not enable inference.
+
+[Issue 0013](issues/0013-provision-inference-api-key.md) replaces login-token inference with the organization/project API-key flow used by the third-party ZCode client. Unit tests and local build gates pass; live API-key inference and the created key's Standard/Coding Plan classification remain unverified.
 
 ## CPA contracts
 
@@ -57,7 +59,9 @@ The next `glm-5.3` attempt reached the upstream execution path and failed after 
 | Usage-detail endpoint `GET /api/monitor/token-usage/usage-detail?usageType=MODEL&type=1` returns the documented JSON envelope | Verified (user) — fixture `testdata/usage-detail.json` | History view breaks; decode errors surface as management 502 |
 | Monitor endpoints authorize with the **business** token; session token rejected (envelope 401 in HTTP 200) | Verified (live) 2026-10-24 | Handled: envelope-aware bearer fallback |
 | Login tokens authorize model inference (coding, anthropic, ultra-proxy paths) | **Fails — verified (live) 2026-10-24** | Executor wired and routing correctly; upstream refuses the credential class; no fallback by design |
-| Inference sends `X-Zcode-Token` with each bearer candidate | Reported by the third-party ZCode client; implemented in [issue 0012](issues/0012-send-zcode-token-for-inference.md), **live unverified** | Upstream may continue to reject login-token inference; no API-key fallback is added |
+| Inference sends `X-Zcode-Token` with the provisioned API-key bearer | Reported by the third-party ZCode client; API-key inference **live unverified** | Inference fails until a valid key is provisioned; no login-token fallback exists |
+| Project keys are listed by exact configured name, created when absent, and copied when masked at `/api/biz/v1/organization/{org}/projects/{project}/api_keys` | Reported by the third-party [ZCode OAuth client](https://cdn.jsdelivr.net/npm/pi-zcode@0.1.4/src/auth/oauth.ts); **live unverified** | Login stops with a sanitized error; no arbitrary-key selection, rotation, or deletion |
+| New keys use Coding Plan rather than Standard billing | **Unverified.** The [official guide](https://docs.z.ai/devpack/notice/api-key-management) separates key types but does not document this management API | The operator must inspect key classification and billing before relying on plan quota |
 | Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling, including ready completion | **Verified (live)** 2026-10-24 gated run | Sign-in fails with a sanitized error; no fallback exists by design |
 | Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | **Verified (live)** 2026-10-24 gated run | Monitor endpoints require the business token; envelope-aware bearer fallback handles rejected candidates |
 | `quota/limit` response shape (unit/number window rows, percentage, nextResetTime) | Reported ([OpenUsage](https://openusage.sh/docs/providers/zai/)) | Quota buckets stay absent (unknown), summary empty |
@@ -67,7 +71,7 @@ The next `glm-5.3` attempt reached the upstream execution path and failed after 
 
 ## Deliberate exclusions
 
-- No API-key listing, creation, copying, or rotation — rejected in transport and tests.
+- No API-key rotation, deletion, arbitrary selection, or login-token inference fallback.
 - No browser automation, no `zcode://` handler takeover, no browser-storage scraping.
 - No China-region endpoints (`open.bigmodel.cn`).
 - No quota reset actions.

@@ -1,6 +1,6 @@
 # cpa-auth-zai
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, chat-completions execution, and quota/usage history. Login-derived tokens only — the plugin never creates or uses API keys.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, chat-completions execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
 
 ## Build
 
@@ -32,6 +32,8 @@ plugins:
       enabled: true
       # Optional IANA zone for usage history when the request omits timezone.
       history-timezone: Europe/Bucharest
+      # Exact project API-key name to reuse or create during login.
+      api-key-name: cpa-auth-zai
 ```
 
 ## Active features
@@ -40,7 +42,7 @@ plugins:
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
 | `model_provider` | Live Coding Plan catalog from `api.z.ai/api/coding/paas/v4/models`, using the business token derived from OAuth login. No fixed-model fallback. |
-| `executor` | Login-token chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`. Sends the bearer candidate and separate `X-Zcode-Token` header; no API key. Live inference remains unverified after earlier provider-side token rejections and an HTTP 500 before the combined-header change. |
+| `executor` | Chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`, using the provisioned project API key as bearer and the optional separate `X-Zcode-Token` header. No login-token fallback. Live API-key inference remains unverified. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 
@@ -49,6 +51,10 @@ Plugin cards and the plugin-resource sidebar use the official z.ai SVG. General 
 ## Login
 
 Start the flow from the CPA management UI (provider `zai`) and complete sign-in in your browser — the browser may be on any machine. If z.ai redirects to its hosted callback page, paste the complete callback URL into the CPA login modal. The plugin polls z.ai's hosted login endpoint; no callback port, desktop URI handler, or localhost redirect is required.
+
+After sign-in, the plugin lists keys in the default organization and first project. It reuses the exact `api-key-name` match or creates that key, retrieves its secret, and stores the combined key in CPA credential storage. It never selects another key, rotates keys, or deletes keys. Existing credentials from older plugin versions need a new sign-in before inference. Changing `api-key-name` also requires a new sign-in to provision the selected name.
+
+The key-management API is third-party evidence, not a published z.ai integration contract. z.ai now separates Standard and Coding Plan keys; check the created key's classification and billing behavior during live verification.
 
 ## Logging
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -11,6 +12,7 @@ import (
 // plugins.configs.cpa-auth-zai, delivered via plugin.register/reconfigure.
 type pluginSettings struct {
 	HistoryTimezone string `yaml:"history-timezone"`
+	APIKeyName      string `yaml:"api-key-name"`
 }
 
 var settingsMu sync.RWMutex
@@ -37,6 +39,15 @@ func preferredTimezone() string {
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
 	return settings.HistoryTimezone
+}
+
+func preferredAPIKeyName() string {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	if name := strings.TrimSpace(settings.APIKeyName); name != "" {
+		return name
+	}
+	return "cpa-auth-zai"
 }
 
 // lifecycleConfigYAML extracts config_yaml from a register/reconfigure payload.

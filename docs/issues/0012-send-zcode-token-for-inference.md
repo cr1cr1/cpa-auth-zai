@@ -29,7 +29,7 @@ Earlier live checks rejected standalone login tokens. The combined-header contra
 - `mise run test` passed with the race detector.
 - `mise run lint` reported `0 issues` with a writable linter cache.
 - `mise run build` produced `dist/cpa-auth-zai.so`.
-- Live inference remains unverified until the operator installs the build and retries `glm-5.3`.
+- Live minimal non-streaming inference still failed with z.ai error ID `20261025062312a301da0c74d44317`; the combined login-token header did not work. [Issue 0013](0013-provision-inference-api-key.md) supersedes this authentication path with a provisioned API key.
 
 ## Evidence boundary
 

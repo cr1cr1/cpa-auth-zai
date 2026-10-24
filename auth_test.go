@@ -87,7 +87,7 @@ func installAuthFakeHost(t *testing.T, respond func(authHostCall) []byte) *authF
 		fake.mu.Lock()
 		fake.calls = append(fake.calls, call)
 		fake.mu.Unlock()
-		return respond(call), nil
+		return fake.respond(call), nil
 	}
 	t.Cleanup(func() { hostCaller = prev })
 	return fake
@@ -160,6 +160,11 @@ func authLoginRoutes(t *testing.T, pollBody func() string) *authFakeHost {
 			return authHostEnvelope(200, `{"code":200,"data":{"access_token":"biz-jwt"}}`)
 		case call.URL == customerInfoURL:
 			return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-first","isDefault":false},{"organizationId":"org-default","isDefault":true,"projects":[{"projectId":"proj-default","id":"x"}]}]}}`)
+		case call.URL == "https://api.z.ai/api/biz/v1/organization/org-default/projects/proj-default/api_keys":
+			if call.Method != http.MethodGet || strings.Join(call.Headers["Authorization"], "") != "Bearer biz-jwt" {
+				t.Errorf("key list request = %s %s %v", call.Method, call.URL, call.Headers["Authorization"])
+			}
+			return authHostEnvelope(200, `{"code":200,"data":[{"name":"another-key","apiKey":"other-id","secretKey":"other-secret"},{"name":"cpa-auth-zai","apiKey":"key-id","secretKey":"key-secret"}]}`)
 		}
 		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
 		return authHostEnvelope(404, `{"code":404,"msg":"not found"}`)
@@ -424,6 +429,13 @@ func TestLoginPollSuccess(t *testing.T) {
 	if storage.OAuthAccessToken != "oauth-tok" || storage.ZcodeJWT != "zcode-jwt" || storage.BizAccessToken != "biz-jwt" {
 		t.Fatalf("storage tokens = %+v", storage)
 	}
+	var storedFields map[string]any
+	if errUnmarshal := json.Unmarshal(resp.Auth.StorageJSON, &storedFields); errUnmarshal != nil {
+		t.Fatalf("decode storage fields: %v", errUnmarshal)
+	}
+	if storedFields["api_key"] != "key-id.key-secret" {
+		t.Fatalf("stored api_key = %v, want exact-name project key", storedFields["api_key"])
+	}
 	if storage.Email != authTestEmail || storage.Type != providerID || storage.Version != storageVersion {
 		t.Fatalf("storage identity = %+v", storage)
 	}
@@ -439,6 +451,32 @@ func TestLoginPollSuccess(t *testing.T) {
 	logs := fake.recordedLogs()
 	if len(logs) != 3 || logs[1].Level != "info" || !strings.Contains(logs[1].Message, "OAuth login succeeded") {
 		t.Fatalf("successful login logs = %+v", logs)
+	}
+}
+
+func TestLoginStopsWhenAPIKeyProvisioningFails(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	fake := authLoginRoutes(t, func() string { return authReadyBody() })
+	baseRespond := fake.respond
+	fake.respond = func(call authHostCall) []byte {
+		if strings.HasSuffix(call.URL, "/api_keys") {
+			if call.Method != http.MethodGet {
+				t.Errorf("list failure must not create a key: %s", call.Method)
+			}
+			return authHostEnvelope(403, `{"msg":"biz-jwt rejected"}`)
+		}
+		return baseRespond(call)
+	}
+	started := authStart(t)
+	resp := authPoll(t, started.State)
+	if resp.Status != pluginapi.AuthLoginStatusError || strings.Contains(resp.Message, "biz-jwt") || !strings.Contains(resp.Message, "[redacted]") {
+		t.Fatalf("poll = %+v, want redacted key-provisioning failure", resp)
+	}
+	for _, call := range fake.recorded() {
+		if strings.HasSuffix(call.URL, "/api_keys") && call.Method != http.MethodGet {
+			t.Fatalf("failed key list led to key creation: %s %s", call.Method, call.URL)
+		}
 	}
 }
 
@@ -465,6 +503,26 @@ func TestLoginMetadataSurvivesStorageParse(t *testing.T) {
 	}
 	if len(parsed.Auth.Metadata) != 3 || parsed.Auth.Metadata["type"] != providerID || parsed.Auth.Metadata["organization_id"] != "org-default" || parsed.Auth.Metadata["project_id"] != "proj-default" {
 		t.Fatalf("parsed Auth.Metadata = %v", parsed.Auth.Metadata)
+	}
+}
+
+func TestFetchCustomerOrgAcceptsIDOnlyOrganization(t *testing.T) {
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"id":"org-id-only","isDefault":true,"projects":[{"id":"proj-id-only"}]}]}}`)
+	})
+	orgID, projectID := fetchCustomerOrg("cb-1", "biz-jwt")
+	if orgID != "org-id-only" || projectID != "proj-id-only" {
+		t.Fatalf("organization/project = %q/%q", orgID, projectID)
+	}
+}
+
+func TestFetchCustomerOrgRequiresDefaultOrganization(t *testing.T) {
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-first","isDefault":false,"projects":[{"projectId":"proj-first"}]}]}}`)
+	})
+	orgID, projectID := fetchCustomerOrg("cb-1", "biz-jwt")
+	if orgID != "" || projectID != "" {
+		t.Fatalf("organization/project = %q/%q, want missing default context", orgID, projectID)
 	}
 }
 
@@ -549,7 +607,9 @@ func TestConcurrentPollSingleExchange(t *testing.T) {
 		case call.URL == businessLoginURL:
 			return authHostEnvelope(200, `{"code":200,"data":{"access_token":"biz-jwt"}}`)
 		case call.URL == customerInfoURL:
-			return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-1","isDefault":true}]}}`)
+			return authHostEnvelope(200, `{"code":200,"data":{"organizations":[{"organizationId":"org-1","isDefault":true,"projects":[{"projectId":"proj-1"}]}]}}`)
+		case call.URL == "https://api.z.ai/api/biz/v1/organization/org-1/projects/proj-1/api_keys":
+			return authHostEnvelope(200, `{"code":200,"data":[{"name":"cpa-auth-zai","apiKey":"key-id","secretKey":"key-secret"}]}`)
 		}
 		t.Errorf("unexpected upstream call %s %s", call.Method, call.URL)
 		return authHostEnvelope(404, `{"code":404,"msg":"not found"}`)
@@ -616,9 +676,8 @@ func TestRefreshRequiresNewBrowserSignIn(t *testing.T) {
 	}
 }
 
-// Acceptance: no upstream request in the whole login conversation may touch key
-// management endpoints.
-func TestNoKeyManagementRequests(t *testing.T) {
+// Acceptance: login provisions one key; parse and refresh make no upstream calls.
+func TestKeyManagementOnlyDuringLogin(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
 	loginFake := authLoginRoutes(t, func() string { return authReadyBody() })
@@ -626,7 +685,9 @@ func TestNoKeyManagementRequests(t *testing.T) {
 	if resp := authPoll(t, started.State); resp.Status != pluginapi.AuthLoginStatusSuccess {
 		t.Fatalf("login poll status = %q (%s)", resp.Status, resp.Message)
 	}
-	audited := loginFake.recorded()
+	if got := loginFake.countURL("https://api.z.ai/api/biz/v1/organization/org-default/projects/proj-default/api_keys"); got != 1 {
+		t.Fatalf("login key-list calls = %d, want 1", got)
+	}
 	refreshFake := installAuthFakeHost(t, func(call authHostCall) []byte {
 		t.Errorf("parse/refresh must not contact upstream: %s %s", call.Method, call.URL)
 		return authHostEnvelope(500, `{"code":500,"msg":"must not call"}`)
@@ -640,14 +701,8 @@ func TestNoKeyManagementRequests(t *testing.T) {
 	if _, errHandle := callAuthMethod(t, pluginabi.MethodAuthParse, parsePayload); errHandle != nil {
 		t.Fatalf("auth.parse failed: %v", errHandle)
 	}
-	audited = append(audited, refreshFake.recorded()...)
-	if len(audited) == 0 {
-		t.Fatalf("audit expected recorded upstream calls, got none")
-	}
-	for _, call := range audited {
-		if strings.Contains(call.URL, "api_keys") {
-			t.Fatalf("key management endpoint requested: %s", call.URL)
-		}
+	if calls := len(refreshFake.recorded()); calls != 0 {
+		t.Fatalf("parse/refresh made %d upstream calls, want 0", calls)
 	}
 }
 

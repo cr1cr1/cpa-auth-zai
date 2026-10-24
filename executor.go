@@ -110,9 +110,19 @@ func decodeExecutorRequest(payload []byte) (*executorRequest, error) {
 	return &request, nil
 }
 
-// handleExecute forwards the host-translated payload to the coding endpoint
-// verbatim and falls back through the stored bearer candidates on 401/403.
-// Payload rules were already applied by the host; this is the final barrier.
+func inferenceAPIKey(storage *zaiStorage) (string, error) {
+	if apiKey := strings.TrimSpace(storage.APIKey); apiKey != "" {
+		return apiKey, nil
+	}
+	return "", pluginabi.NewError("invalid_request", "z.ai credential has no API key; sign in again to provision one", http.StatusBadRequest)
+}
+
+func sanitizeExecutorError(message, apiKey string) string {
+	return sanitizeDetail(redactSecrets(message, []string{apiKey}))
+}
+
+// handleExecute forwards the host-translated payload with the provisioned API
+// key. Payload rules were already applied by the host; this is the final barrier.
 func handleExecute(payload []byte) (any, error) {
 	request, errDecode := decodeExecutorRequest(payload)
 	if errDecode != nil {
@@ -125,30 +135,22 @@ func handleExecute(payload []byte) (any, error) {
 	if errParse != nil {
 		return nil, errParse
 	}
-	candidates := storage.bearerCandidates()
-	var response *hostHTTPResponse
-	for index, candidate := range candidates {
-		attempt, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(candidate, storage.ZcodeJWT), request.Payload)
-		if errCall != nil {
-			return nil, errCall
-		}
-		response = attempt
-		envelopeReject := attempt.StatusCode >= 200 && attempt.StatusCode < 300 && envelopeAuthRejected(attempt.Body)
-		if !isAuthReject(attempt.StatusCode) && !envelopeReject {
-			break
-		}
-		if index == len(candidates)-1 {
-			break
-		}
+	apiKey, errKey := inferenceAPIKey(storage)
+	if errKey != nil {
+		return nil, errKey
+	}
+	response, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(apiKey, storage.ZcodeJWT), request.Payload)
+	if errCall != nil {
+		return nil, fmt.Errorf("z.ai inference request failed: %s", sanitizeExecutorError(errCall.Error(), apiKey))
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, upstreamStatusError(response.StatusCode, response.Body, candidates...)
+		return nil, upstreamStatusError(response.StatusCode, response.Body, apiKey)
 	}
 	if envelopeAuthRejected(response.Body) {
-		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, candidates...), http.StatusUnauthorized)
+		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, apiKey), http.StatusUnauthorized)
 	}
 	if businessEnvelopeFailed(response.Body) {
-		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, candidates...), http.StatusBadGateway)
+		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, apiKey), http.StatusBadGateway)
 	}
 	return executorResponse{
 		Payload: response.Body,
@@ -170,29 +172,20 @@ func handleExecuteStream(payload []byte) (any, error) {
 	if errParse != nil {
 		return nil, errParse
 	}
-	candidates := storage.bearerCandidates()
-	var stream *hostHTTPStreamStart
-	candidateIndex := 0
-	for index, candidate := range candidates {
-		start, errOpen := openUpstreamStream(request, candidate, storage.ZcodeJWT)
-		if errOpen != nil {
-			return nil, errOpen
-		}
-		stream = start
-		candidateIndex = index
-		if !isAuthReject(start.StatusCode) || index == len(candidates)-1 {
-			break
-		}
-		closeHTTPStream(start.StreamID)
+	apiKey, errKey := inferenceAPIKey(storage)
+	if errKey != nil {
+		return nil, errKey
+	}
+	stream, errOpen := openUpstreamStream(request, apiKey, storage.ZcodeJWT)
+	if errOpen != nil {
+		return nil, fmt.Errorf("z.ai inference stream failed: %s", sanitizeExecutorError(errOpen.Error(), apiKey))
 	}
 	if stream.StatusCode < 200 || stream.StatusCode > 201 {
 		closeHTTPStream(stream.StreamID)
-		return nil, upstreamStatusError(stream.StatusCode, nil, candidates...)
+		return nil, upstreamStatusError(stream.StatusCode, nil, apiKey)
 	}
-	// A rejected stream can answer 2xx with an envelope in the first chunk;
-	// the pump applies the same candidate fallback before emitting any bytes.
 	streamPumps.Add(1)
-	go pumpUpstreamStream(request, candidates, candidateIndex, storage.ZcodeJWT, stream)
+	go pumpUpstreamStream(request, apiKey, stream)
 	return executorStreamResponse{Headers: map[string][]string{"Content-Type": {"text/event-stream"}}}, nil
 }
 
@@ -219,24 +212,24 @@ func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*
 // pumpUpstreamStream relays raw upstream SSE bytes from the host HTTP stream
 // (httpStreamID) to the plugin RPC stream (rpcStreamID). The two ids belong to
 // different bridges and must not be swapped. Chunks are forwarded unmodified.
-func pumpUpstreamStream(request *executorRequest, candidates []string, candidateIndex int, zcodeJWT string, stream *hostHTTPStreamStart) {
+func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTTPStreamStart) {
 	defer streamPumps.Done()
+	defer closeHTTPStream(stream.StreamID)
 	rpcStreamID := request.StreamID
 	pending := []byte{}
-	emitted := false
 	for {
 		result, errCall := callHost(pluginabi.MethodHostHTTPStreamRead, hostStreamID{StreamID: stream.StreamID})
 		if errCall != nil {
-			failRPCStream(rpcStreamID, sanitizeDetail(errCall.Error()))
+			failRPCStream(rpcStreamID, errCall.Error(), apiKey)
 			return
 		}
 		var read hostHTTPStreamRead
 		if errUnmarshal := json.Unmarshal(result, &read); errUnmarshal != nil {
-			failRPCStream(rpcStreamID, sanitizeDetail(errUnmarshal.Error()))
+			failRPCStream(rpcStreamID, errUnmarshal.Error(), apiKey)
 			return
 		}
-		if message := sanitizeDetail(read.Error); message != "" {
-			failRPCStream(rpcStreamID, message)
+		if read.Error != "" {
+			failRPCStream(rpcStreamID, read.Error, apiKey)
 			return
 		}
 		payload := read.Payload
@@ -253,48 +246,18 @@ func pumpUpstreamStream(request *executorRequest, candidates []string, candidate
 			pending = nil
 		}
 		if envelopeAuthRejected(payload) {
-			message := upstreamErrorDetail(payload, candidates...)
-			closeHTTPStream(stream.StreamID)
-			if emitted {
-				failRPCStream(rpcStreamID, message)
-				return
-			}
-			for candidateIndex++; candidateIndex < len(candidates); candidateIndex++ {
-				next, errOpen := openUpstreamStream(request, candidates[candidateIndex], zcodeJWT)
-				if errOpen != nil {
-					failRPCStream(rpcStreamID, sanitizeDetail(errOpen.Error()))
-					return
-				}
-				stream = next
-				if isAuthReject(stream.StatusCode) {
-					closeHTTPStream(stream.StreamID)
-					continue
-				}
-				break
-			}
-			if candidateIndex == len(candidates) {
-				failRPCStream(rpcStreamID, message)
-				return
-			}
-			if stream.StatusCode < 200 || stream.StatusCode > 201 {
-				closeHTTPStream(stream.StreamID)
-				failRPCStream(rpcStreamID, http.StatusText(stream.StatusCode))
-				return
-			}
-			pending = []byte{}
-			continue
+			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, apiKey), apiKey)
+			return
 		}
 		if businessEnvelopeFailed(payload) {
-			closeHTTPStream(stream.StreamID)
-			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, candidates...))
+			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, apiKey), apiKey)
 			return
 		}
 		if len(payload) > 0 {
 			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: payload}); errEmit != nil {
-				closeRPCStream(rpcStreamID, sanitizeDetail(errEmit.Error()))
+				closeRPCStream(rpcStreamID, sanitizeExecutorError(errEmit.Error(), apiKey))
 				return
 			}
-			emitted = true
 		}
 		if read.Done {
 			closeRPCStream(rpcStreamID, "")
@@ -305,9 +268,10 @@ func pumpUpstreamStream(request *executorRequest, candidates []string, candidate
 
 // failRPCStream reports one stream error to the client, then closes the stream
 // with the same message.
-func failRPCStream(rpcStreamID, message string) {
+func failRPCStream(rpcStreamID, message string, secrets ...string) {
+	message = sanitizeDetail(redactSecrets(message, secrets))
 	if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Error: message}); errEmit != nil {
-		message = sanitizeDetail(errEmit.Error())
+		message = sanitizeDetail(redactSecrets(errEmit.Error(), secrets))
 	}
 	closeRPCStream(rpcStreamID, message)
 }
@@ -349,11 +313,6 @@ func handleExecutorHTTP(payload []byte) (any, error) {
 func allowedZaiOrigin(rawURL string) bool {
 	parsed, errParse := url.Parse(rawURL)
 	return errParse == nil && parsed.Scheme == "https" && parsed.Hostname() == "api.z.ai"
-}
-
-// isAuthReject reports statuses that justify trying the next bearer candidate.
-func isAuthReject(status int) bool {
-	return status == 401 || status == 403
 }
 
 func businessEnvelopeFailed(body []byte) bool {

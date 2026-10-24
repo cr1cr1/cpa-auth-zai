@@ -137,7 +137,7 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	request := testJSON(t, map[string]any{
 		"AuthID": "zai-test", "AuthProvider": "zai", "Model": "glm-5.3",
 		"Stream":           false,
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","biz_access_token":"tok-biz","zcode_jwt":"tok-zcode"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","biz_access_token":"tok-biz","zcode_jwt":"tok-zcode","api_key":"key-id.key-secret"}`),
 		"Payload":          payload,
 		"host_callback_id": "cb-1",
 	})
@@ -165,8 +165,8 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	if !bytes.Equal(doRequest.Request.Body, payload) {
 		t.Fatalf("payload mutated: %s", doRequest.Request.Body)
 	}
-	if got := doRequest.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer tok-oauth" {
-		t.Fatalf("Authorization = %v, want first candidate", got)
+	if got := doRequest.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer key-id.key-secret" {
+		t.Fatalf("Authorization = %v, want provisioned API key", got)
 	}
 	if got := doRequest.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
 		t.Fatalf("X-Zcode-Token = %v, want the login-derived ZCode JWT", got)
@@ -195,46 +195,23 @@ func TestCodingRequestHeadersOmitsBlankZcodeToken(t *testing.T) {
 	}
 }
 
-// Acceptance: a 401 from the first bearer candidate falls back to the next
-// stored token, and the client sees the successful body.
-func TestExecuteFallsBackOn401(t *testing.T) {
-	upstreamBody := []byte(`{"id":"ok"}`)
+// Acceptance: inference never retries with login tokens when the API key is rejected.
+func TestExecuteDoesNotFallBackToLoginTokens(t *testing.T) {
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
-		if index == 0 {
-			return map[string]any{"StatusCode": 401, "Body": []byte(`{"error":{"message":"expired"}}`)}, nil
-		}
-		return map[string]any{
-			"StatusCode": 200,
-			"Headers":    map[string][]string{"Content-Type": {"application/json"}},
-			"Body":       upstreamBody,
-		}, nil
+		return map[string]any{"StatusCode": 401, "Body": []byte(`{"error":{"message":"expired"}}`)}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Model": "glm-5.3",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","biz_access_token":"tok-2"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret","biz_access_token":"tok-2"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-1",
 	})
-	result := testCallOK(t, pluginabi.MethodExecutorExecute, request)
-
-	if got := log.count(pluginabi.MethodHostHTTPDo); got != 2 {
-		t.Fatalf("attempts = %d, want 2", got)
+	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
+	if perr.HTTPStatus != 401 {
+		t.Fatalf("HTTPStatus = %d, want 401", perr.HTTPStatus)
 	}
-	var second struct {
-		Request struct {
-			Headers map[string][]string `json:"headers"`
-		} `json:"request"`
-	}
-	testDecode(t, log.all()[1].Payload, &second)
-	if got := second.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer tok-2" {
-		t.Fatalf("second attempt Authorization = %v, want second candidate", got)
-	}
-	var response struct {
-		Payload []byte `json:"Payload"`
-	}
-	testDecode(t, result, &response)
-	if !bytes.Equal(response.Payload, upstreamBody) {
-		t.Fatalf("response payload = %s, want upstream body", response.Payload)
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 1 {
+		t.Fatalf("attempts = %d, want only the API-key request", got)
 	}
 }
 
@@ -246,7 +223,7 @@ func TestExecuteSurfacesUpstreamStatus(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider":     "zai",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-1",
 	})
@@ -267,7 +244,7 @@ func TestExecuteUpstreamErrorDetailSanitized(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider":     "zai",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-1",
 	})
@@ -295,6 +272,9 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 			if got := upstream.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
 				t.Fatalf("X-Zcode-Token = %v, want the login-derived ZCode JWT", got)
 			}
+			if got := upstream.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer key-id.key-secret" {
+				t.Fatalf("Authorization = %v, want provisioned API key", got)
+			}
 			return map[string]any{"status_code": 200, "stream_id": "h1"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
 			switch index {
@@ -310,7 +290,7 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","zcode_jwt":"tok-zcode"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","zcode_jwt":"tok-zcode","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r1", "host_callback_id": "cb-1",
 	})
@@ -375,6 +355,9 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	if len(closes) != 1 || closes[0].StreamID != "r1" || closes[0].Error != "" {
 		t.Fatalf("closes = %+v, want one clean close on r1", closes)
 	}
+	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
+		t.Fatalf("HTTP stream closes = %d, want 1 on normal completion", got)
+	}
 }
 
 // Acceptance: a rejection before the stream starts returns the upstream status,
@@ -385,7 +368,7 @@ func TestExecuteStreamUpstreamRejectsBeforeStream(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r1",
 	})
@@ -427,7 +410,7 @@ func TestExecuteStreamMidStreamError(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r1",
 	})
@@ -474,7 +457,7 @@ func TestCountTokensUnsupported(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai",
-		"StorageJSON":  []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON":  []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":      []byte(`{"model":"glm-5.3"}`),
 	})
 	perr := testCallErr(t, pluginabi.MethodExecutorCountTokens, request)
@@ -576,62 +559,29 @@ func TestExecutorIdentifierMatchesProvider(t *testing.T) {
 	}
 }
 
-// Acceptance: a 401 on the streaming open closes that host HTTP stream and
-// retries with the next bearer candidate; the retry's stream is the one pumped.
-func TestExecuteStreamBearerFallbackOn401(t *testing.T) {
+// Acceptance: streaming inference never retries with login tokens.
+func TestExecuteStreamDoesNotFallBackToLoginTokens(t *testing.T) {
 	doStreamCalls := 0
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
-		switch call.Method {
-		case pluginabi.MethodHostHTTPDoStream:
+		if call.Method == pluginabi.MethodHostHTTPDoStream {
 			doStreamCalls++
-			if doStreamCalls == 1 {
-				return map[string]any{"status_code": 401, "stream_id": "h-reject"}, nil
-			}
-			return map[string]any{"status_code": 200, "stream_id": "h-ok"}, nil
-		case pluginabi.MethodHostHTTPStreamRead:
-			return map[string]any{"payload": []byte("chunk"), "done": true}, nil
+			return map[string]any{"status_code": 401, "stream_id": "h-reject"}, nil
 		}
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret","biz_access_token":"tok-b"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-fb", "host_callback_id": "cb-fb",
 	})
-	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	perr := testCallErr(t, pluginabi.MethodExecutorExecuteStream, request)
 	streamPumps.Wait()
-
-	if doStreamCalls != 2 {
-		t.Fatalf("do_stream calls = %d, want 2 (fallback)", doStreamCalls)
+	if perr.HTTPStatus != 401 || doStreamCalls != 1 {
+		t.Fatalf("error = %+v, do_stream calls = %d; want one API-key attempt", perr, doStreamCalls)
 	}
-	closedRejected := false
-	pumpedOK := false
-	for _, call := range log.all() {
-		if call.Method == pluginabi.MethodHostHTTPStreamClose {
-			var closed struct {
-				StreamID string `json:"stream_id"`
-			}
-			testDecode(t, call.Payload, &closed)
-			if closed.StreamID == "h-reject" {
-				closedRejected = true
-			}
-		}
-		if call.Method == pluginabi.MethodHostHTTPStreamRead {
-			var read struct {
-				StreamID string `json:"stream_id"`
-			}
-			testDecode(t, call.Payload, &read)
-			if read.StreamID == "h-ok" {
-				pumpedOK = true
-			}
-		}
-	}
-	if !closedRejected {
-		t.Fatalf("rejected 401 host stream was not closed")
-	}
-	if !pumpedOK {
-		t.Fatalf("fallback host stream was not pumped")
+	if log.count(pluginabi.MethodHostHTTPStreamClose) != 1 {
+		t.Fatalf("rejected HTTP stream was not closed: %+v", log.all())
 	}
 }
 
@@ -645,13 +595,13 @@ func TestExecuteStreamEmitFailureCloses(t *testing.T) {
 		case pluginabi.MethodHostHTTPStreamRead:
 			return map[string]any{"payload": []byte("data"), "done": false}, nil
 		case pluginabi.MethodHostStreamEmit:
-			return nil, fmt.Errorf("emit channel closed")
+			return nil, fmt.Errorf("emit channel closed for key-id.key-secret")
 		}
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-emit-fail", "host_callback_id": "cb-ef",
 	})
@@ -671,23 +621,17 @@ func TestExecuteStreamEmitFailureCloses(t *testing.T) {
 			}
 		}
 	}
-	if closeErr == "" {
-		t.Fatalf("emit failure did not close the rpc stream with an error")
+	if closeErr == "" || strings.Contains(closeErr, "key-id.key-secret") || !strings.Contains(closeErr, "[redacted]") {
+		t.Fatalf("emit failure close error = %q, want redacted API key", closeErr)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
+		t.Fatalf("HTTP stream closes = %d, want 1", got)
 	}
 }
 
-// Acceptance: the coding endpoint can wrap auth rejection in HTTP 200; the
-// executor must advance candidates and only then surface the 401.
-func TestExecuteAdvancesOnEnvelope401(t *testing.T) {
-	doCalls := 0
-	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
-		if call.Method == pluginabi.MethodHostHTTPDo {
-			doCalls++
-			if doCalls == 1 {
-				return hostHTTPResponse{StatusCode: 200, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{"code":401,"msg":"token expired or incorrect","success":false}`)}, nil
-			}
-			return hostHTTPResponse{StatusCode: 200, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{"id":"x","choices":[]}`)}, nil
-		}
+func TestExecuteRequiresProvisionedAPIKey(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		t.Errorf("request without an API key reached the host: %s", call.Method)
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
@@ -696,12 +640,12 @@ func TestExecuteAdvancesOnEnvelope401(t *testing.T) {
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-env",
 	})
-	raw, errHandle := handleCall(pluginabi.MethodExecutorExecute, request)
-	if errHandle != nil {
-		t.Fatalf("second candidate should succeed: %v (%s)", errHandle, raw)
+	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
+	if perr.HTTPStatus != 400 || !strings.Contains(perr.Message, "sign in again") {
+		t.Fatalf("error = %+v, want re-login guidance", perr)
 	}
-	if doCalls != 2 {
-		t.Fatalf("upstream calls = %d, want 2", doCalls)
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
 	}
 }
 
@@ -716,7 +660,7 @@ func TestExecuteEnvelope401SurfacesUnauthorized(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider":     "zai",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-env2",
 	})
@@ -739,7 +683,7 @@ func TestExecuteEnvelopeBusinessFailure(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider":     "zai",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret","biz_access_token":"tok-b"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-business",
 	})
@@ -752,69 +696,40 @@ func TestExecuteEnvelopeBusinessFailure(t *testing.T) {
 	}
 }
 
-// Acceptance: an envelope 401 rejects the current HTTP stream without emitting
-// its body, closes it, and retries the next bearer on a fresh HTTP stream.
-func TestExecuteStreamBearerFallbackOnEnvelope401(t *testing.T) {
+// Acceptance: an envelope 401 closes the stream without login-token fallback.
+func TestExecuteStreamEnvelope401IsTerminal(t *testing.T) {
 	doStreamCalls := 0
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		switch call.Method {
 		case pluginabi.MethodHostHTTPDoStream:
-			var upstream hostHTTPRequest
-			testDecode(t, call.Payload, &upstream)
-			if got := upstream.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
-				t.Errorf("X-Zcode-Token = %v on stream attempt %d", got, doStreamCalls+1)
-			}
 			doStreamCalls++
-			if doStreamCalls == 1 {
-				return map[string]any{"status_code": 200, "stream_id": "h-envelope-reject"}, nil
-			}
-			return map[string]any{"status_code": 200, "stream_id": "h-envelope-ok"}, nil
+			return map[string]any{"status_code": 200, "stream_id": "h-envelope-reject"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
-			var read hostStreamID
-			testDecode(t, call.Payload, &read)
-			if read.StreamID == "h-envelope-reject" {
-				return map[string]any{"payload": []byte(`{"code":401,"msg":"token expired","success":false}`), "done": true}, nil
-			}
-			return map[string]any{"payload": []byte("data: ok\n\n"), "done": true}, nil
+			return map[string]any{"payload": []byte(`{"code":401,"msg":"token expired","success":false}`), "done": true}, nil
 		}
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b","zcode_jwt":"tok-zcode"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret","biz_access_token":"tok-b","zcode_jwt":"tok-zcode"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
-		"stream_id":   "r-envelope-fallback", "host_callback_id": "cb-envelope-fallback",
+		"stream_id":   "r-envelope-terminal", "host_callback_id": "cb-envelope-terminal",
 	})
 	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
 	streamPumps.Wait()
-
-	if doStreamCalls != 2 {
-		t.Fatalf("do_stream calls = %d, want 2", doStreamCalls)
+	if doStreamCalls != 1 {
+		t.Fatalf("do_stream calls = %d, want no login-token retry", doStreamCalls)
 	}
-	closedRejected := false
-	var emitted [][]byte
+	var closeError string
 	for _, call := range log.all() {
-		switch call.Method {
-		case pluginabi.MethodHostHTTPStreamClose:
-			var closed hostStreamID
+		if call.Method == pluginabi.MethodHostStreamClose {
+			var closed rpcStreamClose
 			testDecode(t, call.Payload, &closed)
-			if closed.StreamID == "h-envelope-reject" {
-				closedRejected = true
-			}
-		case pluginabi.MethodHostStreamEmit:
-			var emit rpcStreamEmit
-			testDecode(t, call.Payload, &emit)
-			if emit.Error != "" {
-				t.Fatalf("fallback stream emitted error %q", emit.Error)
-			}
-			emitted = append(emitted, emit.Payload)
+			closeError = closed.Error
 		}
 	}
-	if !closedRejected {
-		t.Fatalf("rejected envelope HTTP stream was not closed")
-	}
-	if len(emitted) != 1 || !bytes.Equal(emitted[0], []byte("data: ok\n\n")) {
-		t.Fatalf("emitted payloads = %q, want only fallback SSE bytes", emitted)
+	if closeError != "token expired" {
+		t.Fatalf("RPC close error = %q, want token expired", closeError)
 	}
 }
 
@@ -832,7 +747,7 @@ func TestExecuteStreamTerminalBusinessEnvelope(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-terminal", "host_callback_id": "cb-terminal",
 	})
@@ -869,9 +784,8 @@ func TestExecuteStreamTerminalBusinessEnvelope(t *testing.T) {
 	}
 }
 
-// Acceptance: arbitrary host chunking cannot leak fragments of an envelope
-// 401 to the client; the complete envelope still triggers bearer fallback.
-func TestExecuteStreamFragmentedEnvelope401FallsBack(t *testing.T) {
+// Acceptance: arbitrary host chunking cannot leak fragments of an envelope 401.
+func TestExecuteStreamFragmentedEnvelope401IsTerminal(t *testing.T) {
 	doStreamCalls := 0
 	fragmentIndex := 0
 	fragments := [][]byte{
@@ -883,56 +797,35 @@ func TestExecuteStreamFragmentedEnvelope401FallsBack(t *testing.T) {
 		switch call.Method {
 		case pluginabi.MethodHostHTTPDoStream:
 			doStreamCalls++
-			if doStreamCalls == 1 {
-				return map[string]any{"status_code": 200, "stream_id": "h-fragmented"}, nil
-			}
-			return map[string]any{"status_code": 200, "stream_id": "h-fragmented-ok"}, nil
+			return map[string]any{"status_code": 200, "stream_id": "h-fragmented"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
-			var read hostStreamID
-			testDecode(t, call.Payload, &read)
-			if read.StreamID == "h-fragmented" {
-				payload := fragments[fragmentIndex]
-				fragmentIndex++
-				return map[string]any{"payload": payload, "done": fragmentIndex == len(fragments)}, nil
-			}
-			return map[string]any{"payload": []byte("data: ok\n\n"), "done": true}, nil
+			payload := fragments[fragmentIndex]
+			fragmentIndex++
+			return map[string]any{"payload": payload, "done": fragmentIndex == len(fragments)}, nil
 		}
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret","biz_access_token":"tok-b"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-fragmented", "host_callback_id": "cb-fragmented",
 	})
 	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
 	streamPumps.Wait()
-
-	if doStreamCalls != 2 {
-		t.Fatalf("do_stream calls = %d, want 2", doStreamCalls)
+	if doStreamCalls != 1 {
+		t.Fatalf("do_stream calls = %d, want no login-token retry", doStreamCalls)
 	}
-	var emitted [][]byte
-	closedRejected := false
+	var closeError string
 	for _, call := range log.all() {
-		switch call.Method {
-		case pluginabi.MethodHostStreamEmit:
-			var emit rpcStreamEmit
-			testDecode(t, call.Payload, &emit)
-			if emit.Error != "" {
-				t.Fatalf("fallback stream emitted error %q", emit.Error)
-			}
-			emitted = append(emitted, emit.Payload)
-		case pluginabi.MethodHostHTTPStreamClose:
-			var closeRequest hostStreamID
-			testDecode(t, call.Payload, &closeRequest)
-			closedRejected = closedRejected || closeRequest.StreamID == "h-fragmented"
+		if call.Method == pluginabi.MethodHostStreamClose {
+			var closed rpcStreamClose
+			testDecode(t, call.Payload, &closed)
+			closeError = closed.Error
 		}
 	}
-	if len(emitted) != 1 || !bytes.Equal(emitted[0], []byte("data: ok\n\n")) {
-		t.Fatalf("emitted payloads = %q, want only fallback SSE bytes", emitted)
-	}
-	if !closedRejected {
-		t.Fatalf("fragmented rejected HTTP stream was not closed")
+	if closeError != "token expired" {
+		t.Fatalf("RPC close error = %q, want token expired", closeError)
 	}
 }
 
@@ -955,7 +848,7 @@ func TestExecuteStreamDoesNotFallBackAfterOutput(t *testing.T) {
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret","biz_access_token":"tok-b"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-started", "host_callback_id": "cb-started",
 	})

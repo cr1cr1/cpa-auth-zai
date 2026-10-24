@@ -116,6 +116,7 @@ type customerInfoResponse struct {
 	Data struct {
 		Organizations []struct {
 			OrganizationID string `json:"organizationId"`
+			ID             string `json:"id"`
 			IsDefault      bool   `json:"isDefault"`
 			Projects       []struct {
 				ProjectID string `json:"projectId"`
@@ -324,12 +325,17 @@ func exchangeLoginPoll(callbackID string, flow *loginFlow) (resp *pluginapi.Auth
 		return respFail, nil, false
 	}
 	orgID, projectID := fetchCustomerOrg(callbackID, bizToken)
+	apiKey, errKey := provisionAPIKey(callbackID, bizToken, orgID, projectID)
+	if errKey != nil {
+		return &pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: errKey.Error()}, nil, false
+	}
 	storage := zaiStorage{
 		Version:          storageVersion,
 		Type:             providerID,
 		OAuthAccessToken: oauthToken,
 		ZcodeJWT:         poll.Data.Token,
 		BizAccessToken:   bizToken,
+		APIKey:           apiKey,
 		Email:            pollUserField(poll.Data.User, "email", "userName", "name"),
 		UserID:           pollUserField(poll.Data.User, "id", "user_id"),
 		OrganizationID:   orgID,
@@ -407,11 +413,11 @@ func fetchCustomerOrg(callbackID, bizToken string) (orgID, projectID string) {
 		if !org.IsDefault {
 			continue
 		}
-		return org.OrganizationID, firstProjectID(org.Projects)
-	}
-	if len(info.Data.Organizations) > 0 {
-		org := info.Data.Organizations[0]
-		return org.OrganizationID, firstProjectID(org.Projects)
+		orgID := org.OrganizationID
+		if orgID == "" {
+			orgID = org.ID
+		}
+		return orgID, firstProjectID(org.Projects)
 	}
 	return "", ""
 }

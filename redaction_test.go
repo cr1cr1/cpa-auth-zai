@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,17 +42,17 @@ func TestExecuteRedactsRejectedCandidate(t *testing.T) {
 	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		return map[string]any{
 			"StatusCode": 401,
-			"Body":       []byte(`{"error":{"message":"Bearer tok-1 rejected"}}`),
+			"Body":       []byte(`{"error":{"message":"Bearer key-id.key-secret rejected"}}`),
 		}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider":     "zai",
-		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1"}`),
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-1",
 	})
 	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
-	if strings.Contains(perr.Message, "tok-1") || !strings.Contains(perr.Message, "[redacted]") {
+	if strings.Contains(perr.Message, "key-id.key-secret") || !strings.Contains(perr.Message, "[redacted]") {
 		t.Fatalf("executor error did not redact the candidate: %q", perr.Message)
 	}
 }
@@ -89,6 +90,67 @@ func TestHistoryRedactsUpstreamCredential(t *testing.T) {
 	}
 }
 
+func TestExecuteRedactsHostError(t *testing.T) {
+	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return nil, fmt.Errorf("Bearer key-id.key-secret request failed")
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider":     "zai",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":          []byte(`{"model":"glm-5.3"}`),
+		"host_callback_id": "cb-1",
+	})
+	_, errHandle := handleCall(pluginabi.MethodExecutorExecute, request)
+	if errHandle == nil || strings.Contains(errHandle.Error(), "key-id.key-secret") || !strings.Contains(errHandle.Error(), "[redacted]") {
+		t.Fatalf("host error = %v, want redacted API key", errHandle)
+	}
+}
+
+func TestExecuteStreamRedactsHostOpenError(t *testing.T) {
+	testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return nil, fmt.Errorf("Bearer key-id.key-secret open failed")
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-open-error", "host_callback_id": "cb-open-error",
+	})
+	_, errHandle := handleCall(pluginabi.MethodExecutorExecuteStream, request)
+	if errHandle == nil || strings.Contains(errHandle.Error(), "key-id.key-secret") || !strings.Contains(errHandle.Error(), "[redacted]") {
+		t.Fatalf("host open error = %v, want redacted API key", errHandle)
+	}
+}
+
+func TestExecuteStreamRedactsHostReadError(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return map[string]any{"status_code": 200, "stream_id": "h-read-error"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"error": "Bearer key-id.key-secret read failed", "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-read-error", "host_callback_id": "cb-read-error",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+	for _, call := range log.all() {
+		if call.Method != pluginabi.MethodHostStreamEmit && call.Method != pluginabi.MethodHostStreamClose {
+			continue
+		}
+		message := string(call.Payload)
+		if strings.Contains(message, "key-id.key-secret") || !strings.Contains(message, "[redacted]") {
+			t.Fatalf("stream read error did not redact the API key: %s", message)
+		}
+	}
+}
+
 // Acceptance: terminal stream errors also redact the rejected candidate in
 // both the emitted error and the RPC close error.
 func TestExecuteStreamRedactsTerminalCandidate(t *testing.T) {
@@ -97,13 +159,13 @@ func TestExecuteStreamRedactsTerminalCandidate(t *testing.T) {
 		case pluginabi.MethodHostHTTPDoStream:
 			return map[string]any{"status_code": 200, "stream_id": "h-redact"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
-			return map[string]any{"payload": []byte(`{"code":1234,"msg":"tok-a rejected","success":false}`), "done": true}, nil
+			return map[string]any{"payload": []byte(`{"code":1234,"msg":"key-id.key-secret rejected","success":false}`), "done": true}, nil
 		}
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
 		"AuthProvider": "zai", "Stream": true,
-		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a"}`),
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-redact", "host_callback_id": "cb-redact",
 	})
@@ -119,7 +181,7 @@ func TestExecuteStreamRedactsTerminalCandidate(t *testing.T) {
 		if strings.Contains(message, "Network error") || strings.Contains(message, "rejected") || strings.Contains(message, "[redacted]") {
 			errors++
 		}
-		if strings.Contains(message, "tok-a") || !strings.Contains(message, "[redacted]") {
+		if strings.Contains(message, "key-id.key-secret") || !strings.Contains(message, "[redacted]") {
 			t.Fatalf("stream callback did not redact the candidate: %s", message)
 		}
 	}

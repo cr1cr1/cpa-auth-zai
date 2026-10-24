@@ -30,14 +30,14 @@ const (
 const storageVersion = 1
 
 // zaiStorage is the provider-owned credential record persisted by CPA. Tokens
-// are kept by purpose; they are never interchangeable. No API key is ever
-// created, stored, or required by this plugin.
+// are kept by purpose; the provisioned API key is used only for inference.
 type zaiStorage struct {
 	Version          int    `json:"version"`
 	Type             string `json:"type"`
 	OAuthAccessToken string `json:"oauth_access_token,omitempty"`
 	ZcodeJWT         string `json:"zcode_jwt,omitempty"`
 	BizAccessToken   string `json:"biz_access_token,omitempty"`
+	APIKey           string `json:"api_key,omitempty"`
 	Email            string `json:"email,omitempty"`
 	UserID           string `json:"user_id,omitempty"`
 	OrganizationID   string `json:"organization_id,omitempty"`

@@ -713,3 +713,256 @@ func TestExecuteEnvelope401SurfacesUnauthorized(t *testing.T) {
 		t.Fatalf("error should carry 401, got %v", errHandle)
 	}
 }
+
+// Acceptance: an HTTP 200 business failure is a sanitized bad-gateway error,
+// not a successful OpenAI response and not a bearer fallback.
+func TestExecuteEnvelopeBusinessFailure(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return hostHTTPResponse{StatusCode: 200, Body: []byte(`{"code":1234,"msg":"Network error","success":false}`)}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider":     "zai",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":          []byte(`{"model":"glm-5.3"}`),
+		"host_callback_id": "cb-business",
+	})
+	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
+	if perr.Code != "upstream_error" || perr.HTTPStatus != 502 || perr.Message != "Network error" {
+		t.Fatalf("error = %+v, want sanitized upstream_error/502 Network error", perr)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 without fallback", got)
+	}
+}
+
+// Acceptance: an envelope 401 rejects the current HTTP stream without emitting
+// its body, closes it, and retries the next bearer on a fresh HTTP stream.
+func TestExecuteStreamBearerFallbackOnEnvelope401(t *testing.T) {
+	doStreamCalls := 0
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			doStreamCalls++
+			if doStreamCalls == 1 {
+				return map[string]any{"status_code": 200, "stream_id": "h-envelope-reject"}, nil
+			}
+			return map[string]any{"status_code": 200, "stream_id": "h-envelope-ok"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			var read hostStreamID
+			testDecode(t, call.Payload, &read)
+			if read.StreamID == "h-envelope-reject" {
+				return map[string]any{"payload": []byte(`{"code":401,"msg":"token expired","success":false}`), "done": true}, nil
+			}
+			return map[string]any{"payload": []byte("data: ok\n\n"), "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-envelope-fallback", "host_callback_id": "cb-envelope-fallback",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	if doStreamCalls != 2 {
+		t.Fatalf("do_stream calls = %d, want 2", doStreamCalls)
+	}
+	closedRejected := false
+	var emitted [][]byte
+	for _, call := range log.all() {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPStreamClose:
+			var closed hostStreamID
+			testDecode(t, call.Payload, &closed)
+			if closed.StreamID == "h-envelope-reject" {
+				closedRejected = true
+			}
+		case pluginabi.MethodHostStreamEmit:
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			if emit.Error != "" {
+				t.Fatalf("fallback stream emitted error %q", emit.Error)
+			}
+			emitted = append(emitted, emit.Payload)
+		}
+	}
+	if !closedRejected {
+		t.Fatalf("rejected envelope HTTP stream was not closed")
+	}
+	if len(emitted) != 1 || !bytes.Equal(emitted[0], []byte("data: ok\n\n")) {
+		t.Fatalf("emitted payloads = %q, want only fallback SSE bytes", emitted)
+	}
+}
+
+// Acceptance: a terminal business envelope closes both streams with the
+// sanitized upstream error; it is never emitted as data or closed as success.
+func TestExecuteStreamTerminalBusinessEnvelope(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return map[string]any{"status_code": 200, "stream_id": "h-terminal"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": []byte(`{"code":1234,"msg":"Network error","success":false}`), "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-terminal", "host_callback_id": "cb-terminal",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	var emits []rpcStreamEmit
+	var closes []rpcStreamClose
+	closedHTTP := false
+	for _, call := range log.all() {
+		switch call.Method {
+		case pluginabi.MethodHostStreamEmit:
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			emits = append(emits, emit)
+		case pluginabi.MethodHostStreamClose:
+			var closeRequest rpcStreamClose
+			testDecode(t, call.Payload, &closeRequest)
+			closes = append(closes, closeRequest)
+		case pluginabi.MethodHostHTTPStreamClose:
+			var closeRequest hostStreamID
+			testDecode(t, call.Payload, &closeRequest)
+			closedHTTP = closeRequest.StreamID == "h-terminal"
+		}
+	}
+	if len(emits) != 1 || emits[0].Error != "Network error" || len(emits[0].Payload) != 0 {
+		t.Fatalf("emits = %+v, want only Network error", emits)
+	}
+	if len(closes) != 1 || closes[0].Error != "Network error" {
+		t.Fatalf("RPC closes = %+v, want one Network error close", closes)
+	}
+	if !closedHTTP {
+		t.Fatalf("terminal HTTP stream was not closed")
+	}
+}
+
+// Acceptance: arbitrary host chunking cannot leak fragments of an envelope
+// 401 to the client; the complete envelope still triggers bearer fallback.
+func TestExecuteStreamFragmentedEnvelope401FallsBack(t *testing.T) {
+	doStreamCalls := 0
+	fragmentIndex := 0
+	fragments := [][]byte{
+		[]byte(`{"code":40`),
+		[]byte(`1,"msg":"token `),
+		[]byte(`expired","success":false}`),
+	}
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			doStreamCalls++
+			if doStreamCalls == 1 {
+				return map[string]any{"status_code": 200, "stream_id": "h-fragmented"}, nil
+			}
+			return map[string]any{"status_code": 200, "stream_id": "h-fragmented-ok"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			var read hostStreamID
+			testDecode(t, call.Payload, &read)
+			if read.StreamID == "h-fragmented" {
+				payload := fragments[fragmentIndex]
+				fragmentIndex++
+				return map[string]any{"payload": payload, "done": fragmentIndex == len(fragments)}, nil
+			}
+			return map[string]any{"payload": []byte("data: ok\n\n"), "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-fragmented", "host_callback_id": "cb-fragmented",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	if doStreamCalls != 2 {
+		t.Fatalf("do_stream calls = %d, want 2", doStreamCalls)
+	}
+	var emitted [][]byte
+	closedRejected := false
+	for _, call := range log.all() {
+		switch call.Method {
+		case pluginabi.MethodHostStreamEmit:
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			if emit.Error != "" {
+				t.Fatalf("fallback stream emitted error %q", emit.Error)
+			}
+			emitted = append(emitted, emit.Payload)
+		case pluginabi.MethodHostHTTPStreamClose:
+			var closeRequest hostStreamID
+			testDecode(t, call.Payload, &closeRequest)
+			closedRejected = closedRejected || closeRequest.StreamID == "h-fragmented"
+		}
+	}
+	if len(emitted) != 1 || !bytes.Equal(emitted[0], []byte("data: ok\n\n")) {
+		t.Fatalf("emitted payloads = %q, want only fallback SSE bytes", emitted)
+	}
+	if !closedRejected {
+		t.Fatalf("fragmented rejected HTTP stream was not closed")
+	}
+}
+
+// Acceptance: bearer fallback is safe only before client output. A later
+// envelope 401 closes the existing RPC stream with an error without retrying.
+func TestExecuteStreamDoesNotFallBackAfterOutput(t *testing.T) {
+	doStreamCalls := 0
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			doStreamCalls++
+			return map[string]any{"status_code": 200, "stream_id": "h-started"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			if index == 0 {
+				return map[string]any{"payload": []byte("data: started\n\n"), "done": false}, nil
+			}
+			return map[string]any{"payload": []byte(`{"code":401,"msg":"token expired","success":false}`), "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true,
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-a","biz_access_token":"tok-b"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-started", "host_callback_id": "cb-started",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	if doStreamCalls != 1 {
+		t.Fatalf("do_stream calls = %d, want no retry after output", doStreamCalls)
+	}
+	var emittedData [][]byte
+	var closeError string
+	for _, call := range log.all() {
+		switch call.Method {
+		case pluginabi.MethodHostStreamEmit:
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			if len(emit.Payload) > 0 {
+				emittedData = append(emittedData, emit.Payload)
+			}
+		case pluginabi.MethodHostStreamClose:
+			var closeRequest rpcStreamClose
+			testDecode(t, call.Payload, &closeRequest)
+			closeError = closeRequest.Error
+		}
+	}
+	if len(emittedData) != 1 || !bytes.Equal(emittedData[0], []byte("data: started\n\n")) {
+		t.Fatalf("emitted data = %q, want only initial SSE bytes", emittedData)
+	}
+	if closeError != "token expired" {
+		t.Fatalf("RPC close error = %q, want token expired", closeError)
+	}
+}

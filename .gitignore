@@ -1,4 +1,5 @@
 dist/
+/cpa-auth-zai
 *.so
 *.h
 testenv/

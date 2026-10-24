@@ -262,6 +262,19 @@ func mustTime(t *testing.T, raw string) time.Time {
 	return parsed
 }
 
+// Acceptance: a usage business error cannot echo a stored credential through
+// the management API, even when it appears inside the provider message.
+func TestUsageBusinessErrorRedactsCredential(t *testing.T) {
+	raw := []byte(`{"code":401,"msg":"Bearer tok-oauth rejected","success":false}`)
+	_, err := decodeUsageDetail(raw, "tok-oauth")
+	if err == nil {
+		t.Fatalf("business error must fail decode")
+	}
+	if strings.Contains(err.Error(), "tok-oauth") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("error did not redact the credential: %q", err)
+	}
+}
+
 // Acceptance: a hostile upstream msg cannot flood the management 502 body.
 func TestUsageBusinessErrorDetailCapped(t *testing.T) {
 	huge := strings.Repeat("x", 5000)

@@ -58,7 +58,7 @@ type usageModelSummary struct {
 
 // decodeUsageDetail validates the upstream envelope and pairs every per-model
 // array with xTime. It does not sum or transform beyond the decode.
-func decodeUsageDetail(raw []byte) (UsageDetail, error) {
+func decodeUsageDetail(raw []byte, secrets ...string) (UsageDetail, error) {
 	var envelope struct {
 		Code    int          `json:"code"`
 		Msg     string       `json:"msg"`
@@ -69,7 +69,7 @@ func decodeUsageDetail(raw []byte) (UsageDetail, error) {
 		return UsageDetail{}, fmt.Errorf("zai: decode usage detail: %w", errUnmarshal)
 	}
 	if envelope.Code != 200 || (envelope.Success != nil && !*envelope.Success) {
-		message := sanitizeDetail(envelope.Msg)
+		message := sanitizeDetail(redactSecrets(envelope.Msg, secrets))
 		if message == "" {
 			message = "usage request failed"
 		}
@@ -99,10 +99,9 @@ func decodeUsageDetail(raw []byte) (UsageDetail, error) {
 
 // UsageQuery carries the requested history range and the UI-selected zone.
 type UsageQuery struct {
-	AuthIndex string
-	Start     time.Time
-	End       time.Time
-	Timezone  string
+	Start    time.Time
+	End      time.Time
+	Timezone string
 }
 
 type usageViewRange struct {
@@ -259,9 +258,9 @@ func fetchUsageDetail(auth *zaiStorage, callbackID string, start, end time.Time)
 	response, okFetch := tryBearerCandidates(callbackID, usageDetailURL+"?"+query, auth)
 	if !okFetch {
 		if response != nil {
-			return UsageDetail{}, upstreamError(response.StatusCode, response.Body)
+			return UsageDetail{}, upstreamError(response.StatusCode, response.Body, auth.bearerCandidates()...)
 		}
 		return UsageDetail{}, fmt.Errorf("zai: usage detail request failed for every stored credential")
 	}
-	return decodeUsageDetail(response.Body)
+	return decodeUsageDetail(response.Body, auth.bearerCandidates()...)
 }

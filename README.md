@@ -1,10 +1,10 @@
 # cpa-auth-zai
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) as a provider: browser sign-in, account-scoped models, request execution, and quota/usage reporting. Login-derived tokens only — the plugin never creates or uses API keys.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in and quota/usage history. Model execution is disabled because z.ai rejects login tokens for inference. Login-derived tokens only — the plugin never creates or uses API keys.
 
 ## Build
 
-[mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). Requires a local CPA v8 checkout (see `go.mod` `replace`).
+[mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). A CPA v8 checkout is required at the relative sibling path `../CLIProxyAPI`; `go.mod` replaces the CPA module with that checkout.
 
 ```bash
 mise run test   # go test -race ./...
@@ -26,15 +26,17 @@ plugins:
   configs:
     cpa-auth-zai:
       enabled: true
+      # Optional IANA zone for usage history when the request omits timezone.
+      history-timezone: Europe/Bucharest
 ```
 
-## What it provides
+## Active features
+
+Quota and usage history are the active features. Model and executor capabilities are not registered while z.ai rejects login tokens for inference.
 
 | Capability | Detail |
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
-| `model_provider` | Coding Plan models (`glm-5.3`, `glm-5.3-flash`) published per authenticated account. |
-| `executor` | `chat-completions` passthrough to `https://api.z.ai/api/coding/paas/v4/chat/completions` with the login token. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 

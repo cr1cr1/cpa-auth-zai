@@ -91,17 +91,17 @@ func hostDo(callbackID, method, url string, headers map[string][]string, body []
 }
 
 // upstreamError converts a non-2xx upstream response into an error that carries
-// the upstream status and a sanitized message. Bodies may contain credentials
-// in echo scenarios, so only a short prefix is kept and no headers are copied.
-func upstreamError(status int, body []byte) error {
-	detail := upstreamErrorDetail(body)
+// the upstream status and a sanitized message. Known credentials are redacted
+// before a short body prefix is kept; response headers are never copied.
+func upstreamError(status int, body []byte, secrets ...string) error {
+	detail := upstreamErrorDetail(body, secrets...)
 	if detail == "" {
 		return fmt.Errorf("upstream returned status %d", status)
 	}
 	return fmt.Errorf("upstream returned status %d: %s", status, detail)
 }
 
-func upstreamErrorDetail(body []byte) string {
+func upstreamErrorDetail(body []byte, secrets ...string) string {
 	var parsed struct {
 		Msg     string `json:"msg"`
 		Message string `json:"message"`
@@ -112,14 +112,23 @@ func upstreamErrorDetail(body []byte) string {
 	if errUnmarshal := json.Unmarshal(bytes.TrimSpace(body), &parsed); errUnmarshal == nil {
 		switch {
 		case parsed.Msg != "":
-			return sanitizeDetail(parsed.Msg)
+			return sanitizeDetail(redactSecrets(parsed.Msg, secrets))
 		case parsed.Error != nil && parsed.Error.Message != "":
-			return sanitizeDetail(parsed.Error.Message)
+			return sanitizeDetail(redactSecrets(parsed.Error.Message, secrets))
 		case parsed.Message != "":
-			return sanitizeDetail(parsed.Message)
+			return sanitizeDetail(redactSecrets(parsed.Message, secrets))
 		}
 	}
-	return sanitizeDetail(string(body))
+	return sanitizeDetail(redactSecrets(string(body), secrets))
+}
+
+func redactSecrets(detail string, secrets []string) string {
+	for _, secret := range secrets {
+		if secret = strings.TrimSpace(secret); secret != "" {
+			detail = strings.ReplaceAll(detail, secret, "[redacted]")
+		}
+	}
+	return detail
 }
 
 func sanitizeDetail(detail string) string {

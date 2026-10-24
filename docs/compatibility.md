@@ -26,9 +26,9 @@ Completed a real hosted sign-in against the disposable CPA container and verifie
 | Monitor endpoints (`quota/limit`, `usage-detail`) authorize with… | **the business token**; the OAuth session token and zcode JWT are rejected with envelope `code: 401 "token expired or incorrect"` inside HTTP 200 |
 | Live quota through CPA | **pass** — 5-hour window 96% remaining (reset same-day 12:31 UTC), 7-day 98% (reset Oct 30); the envelope-401 candidate fallback proved necessary and works |
 | Live history through CPA | **pass** — totals match the user's known usage (GLM-5.3 43,484,230); `history-timezone: Europe/Bucharest` config field applied (`2026-10-19T19:00+03:00 → 2026-10-20T19:00+03:00` boundaries) |
-| Token-only model inference | **fails — provider-side.** Coding endpoint, Anthropic endpoint, and zcode ultra-proxy all reject every login token (HTTP 200 envelope `code 1234 "Network error"`, or 401). Model routing, credential selection, and error surfacing through CPA verified correct; the upstream refuses the credential class. |
+| Token-only model inference | **fails — provider-side.** Coding endpoint, Anthropic endpoint, and zcode ultra-proxy all reject every login token (HTTP 200 envelope `code 1234 "Network error"`, or 401). Model routing and credential selection were exercised; the upstream refuses the credential class. |
 
-Consequence: per the plan's stop condition, token-only execution stops here. No API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified; model inference through this plugin waits for z.ai to accept login-token authorization on a model endpoint. Operators who already hold an API key can keep using CPA's own `openai-compatibility` z.ai entry alongside this plugin — no key is created, stored, or required by the plugin.
+Consequence: per the plan's stop condition, token-only execution stops here. No API-key fallback was added. Quota and usage management (goal 2) are complete and live-verified. Model and executor registration is disabled until a live token-only completion passes. Later executor error-handling fixes are unit-tested only and make no new live inference claim. Operators who already hold an API key can keep using CPA's own `openai-compatibility` z.ai entry alongside this plugin — no key is created, stored, or required by the plugin.
 
 ## CPA contracts
 
@@ -48,8 +48,8 @@ Consequence: per the plan's stop condition, token-only execution stops here. No 
 | Usage-detail endpoint `GET /api/monitor/token-usage/usage-detail?usageType=MODEL&type=1` returns the documented JSON envelope | Verified (user) — fixture `testdata/usage-detail.json` | History view breaks; decode errors surface as management 502 |
 | Monitor endpoints authorize with the **business** token; session token rejected (envelope 401 in HTTP 200) | Verified (live) 2026-10-24 | Handled: envelope-aware bearer fallback |
 | Login tokens authorize model inference (coding, anthropic, ultra-proxy paths) | **Fails — verified (live) 2026-10-24** | Executor wired and routing correctly; upstream refuses the credential class; no fallback by design |
-| Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling | init + pending poll **verified (live)**; ready-completion path remains reported ([PROTOCOL.md](https://cdn.jsdelivr.net/npm/pi-zcode-provider@0.1.0/PROTOCOL.md)) | Sign-in fails with a sanitized error; no fallback exists by design |
-| Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | Reported | Only the short-lived OAuth token is available for upstream calls |
+| Hosted polling flow: `POST zcode.z.ai/api/v1/oauth/cli/init` returns flow + live authorize URL; `GET /api/v1/oauth/cli/poll/{flow_id}` accepts polling, including ready completion | **Verified (live)** 2026-10-24 gated run | Sign-in fails with a sanitized error; no fallback exists by design |
+| Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT | **Verified (live)** 2026-10-24 gated run | Monitor endpoints require the business token; envelope-aware bearer fallback handles rejected candidates |
 | `quota/limit` response shape (unit/number window rows, percentage, nextResetTime) | Reported ([OpenUsage](https://openusage.sh/docs/providers/zai/)) | Quota buckets stay absent (unknown), summary empty |
 | Coding Plan model set = `glm-5.3`, `glm-5.3-flash` | Verified (z.ai FAQ, 2026-10) | Model list may need update when z.ai changes plans |
 | Coding Plan usage is restricted to z.ai-approved tools | Verified (z.ai FAQ, 2026-10) | Operator accepts the provider-policy risk when deploying CPA with this plugin |
@@ -79,5 +79,6 @@ Claude requests. All timestamps render through browser-locale `Intl.*` calls.
 Consequence: a "UI-selected timezone" for history requires a management-UI
 extension (external repository) plus a host channel to pass the selection.
 Until that approved scope lands, the history endpoint takes `timezone`
-explicitly and defaults to the source timezone with `provider-day` labeling —
-never the server's clock.
+explicitly. When the request omits it, the `history-timezone` config field is
+the fallback; if that is empty, the source timezone applies with `provider-day`
+labeling — never the server's clock.

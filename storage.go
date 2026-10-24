@@ -12,11 +12,9 @@ import (
 // third-party report, not an official integration contract; see
 // docs/compatibility.md before changing these.
 const (
-	apiZaiBase   = "https://api.z.ai"
-	zcodeBase    = "https://zcode.z.ai"
-	chatZaiBase  = "https://chat.z.ai"
-	monitorBase  = apiZaiBase + "/api/monitor"
-	businessBase = apiZaiBase + "/api"
+	apiZaiBase  = "https://api.z.ai"
+	zcodeBase   = "https://zcode.z.ai"
+	monitorBase = apiZaiBase + "/api/monitor"
 
 	codingChatCompletionsURL = apiZaiBase + "/api/coding/paas/v4/chat/completions"
 	usageDetailURL           = monitorBase + "/token-usage/usage-detail"
@@ -41,6 +39,8 @@ type zaiStorage struct {
 	BizAccessToken   string `json:"biz_access_token,omitempty"`
 	Email            string `json:"email,omitempty"`
 	UserID           string `json:"user_id,omitempty"`
+	OrganizationID   string `json:"organization_id,omitempty"`
+	ProjectID        string `json:"project_id,omitempty"`
 	ObtainedAt       string `json:"obtained_at,omitempty"`
 	ExpiresAt        string `json:"expires_at,omitempty"`
 }

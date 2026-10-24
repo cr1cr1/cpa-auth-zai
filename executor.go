@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -141,10 +142,13 @@ func handleExecute(payload []byte) (any, error) {
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, upstreamStatusError(response.StatusCode, response.Body)
+		return nil, upstreamStatusError(response.StatusCode, response.Body, candidates...)
 	}
 	if envelopeAuthRejected(response.Body) {
-		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body), http.StatusUnauthorized)
+		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, candidates...), http.StatusUnauthorized)
+	}
+	if businessEnvelopeFailed(response.Body) {
+		return nil, pluginabi.NewError("upstream_error", upstreamErrorDetail(response.Body, candidates...), http.StatusBadGateway)
 	}
 	return executorResponse{
 		Payload: response.Body,
@@ -168,24 +172,14 @@ func handleExecuteStream(payload []byte) (any, error) {
 	}
 	candidates := storage.bearerCandidates()
 	var stream *hostHTTPStreamStart
+	candidateIndex := 0
 	for index, candidate := range candidates {
-		result, errCall := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
-			HostCallbackID: request.HostCallbackID,
-			Request: hostHTTPRequestSpec{
-				Method:  "POST",
-				URL:     codingChatCompletionsURL,
-				Headers: codingRequestHeaders(candidate),
-				Body:    request.Payload,
-			},
-		})
-		if errCall != nil {
-			return nil, errCall
+		start, errOpen := openUpstreamStream(request, candidate)
+		if errOpen != nil {
+			return nil, errOpen
 		}
-		var start hostHTTPStreamStart
-		if errUnmarshal := json.Unmarshal(result, &start); errUnmarshal != nil {
-			return nil, fmt.Errorf("zai: decode host stream start: %w", errUnmarshal)
-		}
-		stream = &start
+		stream = start
+		candidateIndex = index
 		if !isAuthReject(start.StatusCode) || index == len(candidates)-1 {
 			break
 		}
@@ -193,22 +187,45 @@ func handleExecuteStream(payload []byte) (any, error) {
 	}
 	if stream.StatusCode < 200 || stream.StatusCode > 201 {
 		closeHTTPStream(stream.StreamID)
-		return nil, upstreamStatusError(stream.StatusCode, nil)
+		return nil, upstreamStatusError(stream.StatusCode, nil, candidates...)
 	}
-	// A rejected stream still answers 2xx with envelope code 401/403 in the
-	// first chunk; the pump surfaces it through failRPCStream.
+	// A rejected stream can answer 2xx with an envelope in the first chunk;
+	// the pump applies the same candidate fallback before emitting any bytes.
 	streamPumps.Add(1)
-	go pumpUpstreamStream(request.StreamID, stream.StreamID)
+	go pumpUpstreamStream(request, candidates, candidateIndex, stream)
 	return executorStreamResponse{Headers: map[string][]string{"Content-Type": {"text/event-stream"}}}, nil
+}
+
+func openUpstreamStream(request *executorRequest, candidate string) (*hostHTTPStreamStart, error) {
+	result, errCall := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
+		HostCallbackID: request.HostCallbackID,
+		Request: hostHTTPRequestSpec{
+			Method:  "POST",
+			URL:     codingChatCompletionsURL,
+			Headers: codingRequestHeaders(candidate),
+			Body:    request.Payload,
+		},
+	})
+	if errCall != nil {
+		return nil, errCall
+	}
+	var start hostHTTPStreamStart
+	if errUnmarshal := json.Unmarshal(result, &start); errUnmarshal != nil {
+		return nil, fmt.Errorf("zai: decode host stream start: %w", errUnmarshal)
+	}
+	return &start, nil
 }
 
 // pumpUpstreamStream relays raw upstream SSE bytes from the host HTTP stream
 // (httpStreamID) to the plugin RPC stream (rpcStreamID). The two ids belong to
 // different bridges and must not be swapped. Chunks are forwarded unmodified.
-func pumpUpstreamStream(rpcStreamID, httpStreamID string) {
+func pumpUpstreamStream(request *executorRequest, candidates []string, candidateIndex int, stream *hostHTTPStreamStart) {
 	defer streamPumps.Done()
+	rpcStreamID := request.StreamID
+	pending := []byte{}
+	emitted := false
 	for {
-		result, errCall := callHost(pluginabi.MethodHostHTTPStreamRead, hostStreamID{StreamID: httpStreamID})
+		result, errCall := callHost(pluginabi.MethodHostHTTPStreamRead, hostStreamID{StreamID: stream.StreamID})
 		if errCall != nil {
 			failRPCStream(rpcStreamID, sanitizeDetail(errCall.Error()))
 			return
@@ -222,11 +239,62 @@ func pumpUpstreamStream(rpcStreamID, httpStreamID string) {
 			failRPCStream(rpcStreamID, message)
 			return
 		}
-		if len(read.Payload) > 0 {
-			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: read.Payload}); errEmit != nil {
+		payload := read.Payload
+		if pending != nil {
+			pending = append(pending, read.Payload...)
+			trimmed := bytes.TrimSpace(pending)
+			if len(trimmed) == 0 && !read.Done {
+				continue
+			}
+			if len(trimmed) > 0 && trimmed[0] == '{' && !json.Valid(pending) && !read.Done {
+				continue
+			}
+			payload = pending
+			pending = nil
+		}
+		if envelopeAuthRejected(payload) {
+			message := upstreamErrorDetail(payload, candidates...)
+			closeHTTPStream(stream.StreamID)
+			if emitted {
+				failRPCStream(rpcStreamID, message)
+				return
+			}
+			for candidateIndex++; candidateIndex < len(candidates); candidateIndex++ {
+				next, errOpen := openUpstreamStream(request, candidates[candidateIndex])
+				if errOpen != nil {
+					failRPCStream(rpcStreamID, sanitizeDetail(errOpen.Error()))
+					return
+				}
+				stream = next
+				if isAuthReject(stream.StatusCode) {
+					closeHTTPStream(stream.StreamID)
+					continue
+				}
+				break
+			}
+			if candidateIndex == len(candidates) {
+				failRPCStream(rpcStreamID, message)
+				return
+			}
+			if stream.StatusCode < 200 || stream.StatusCode > 201 {
+				closeHTTPStream(stream.StreamID)
+				failRPCStream(rpcStreamID, http.StatusText(stream.StatusCode))
+				return
+			}
+			pending = []byte{}
+			continue
+		}
+		if businessEnvelopeFailed(payload) {
+			closeHTTPStream(stream.StreamID)
+			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, candidates...))
+			return
+		}
+		if len(payload) > 0 {
+			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: payload}); errEmit != nil {
 				closeRPCStream(rpcStreamID, sanitizeDetail(errEmit.Error()))
 				return
 			}
+			emitted = true
 		}
 		if read.Done {
 			closeRPCStream(rpcStreamID, "")
@@ -288,6 +356,21 @@ func isAuthReject(status int) bool {
 	return status == 401 || status == 403
 }
 
+func businessEnvelopeFailed(body []byte) bool {
+	var envelope struct {
+		Code    flexNumber `json:"code"`
+		Success *bool      `json:"success"`
+	}
+	if errUnmarshal := json.Unmarshal(body, &envelope); errUnmarshal != nil {
+		return false
+	}
+	if envelope.Success != nil && !*envelope.Success {
+		return true
+	}
+	code := envelope.Code.String()
+	return code != "" && code != "0" && code != "200"
+}
+
 // codingRequestHeaders builds the fixed upstream header set for one candidate.
 func codingRequestHeaders(bearer string) map[string][]string {
 	return map[string][]string{
@@ -299,8 +382,8 @@ func codingRequestHeaders(bearer string) map[string][]string {
 
 // upstreamStatusError maps a non-2xx upstream response into a client-visible
 // error carrying the upstream status. Only the sanitized body detail is kept.
-func upstreamStatusError(status int, body []byte) error {
-	message := upstreamErrorDetail(body)
+func upstreamStatusError(status int, body []byte, secrets ...string) error {
+	message := upstreamErrorDetail(body, secrets...)
 	if message == "" {
 		message = http.StatusText(status)
 	}

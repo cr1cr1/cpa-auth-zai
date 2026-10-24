@@ -137,10 +137,9 @@ func handleManagementHandle(payload []byte) (any, error) {
 		return managementError(http.StatusBadGateway, errFetch.Error()), nil
 	}
 	view, errView := buildUsageView(detail, UsageQuery{
-		AuthIndex: authIndex,
-		Start:     start,
-		End:       end,
-		Timezone:  requestedZone,
+		Start:    start,
+		End:      end,
+		Timezone: requestedZone,
 	})
 	if errView != nil {
 		return managementError(http.StatusBadRequest, errView.Error()), nil

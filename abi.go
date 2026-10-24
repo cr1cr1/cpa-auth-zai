@@ -65,14 +65,9 @@ func registration() map[string]any {
 			}},
 		},
 		"capabilities": map[string]any{
-			"auth_provider":           true,
-			"model_provider":          true,
-			"executor":                true,
-			"executor_model_scope":    "oauth",
-			"executor_input_formats":  []string{"chat-completions"},
-			"executor_output_formats": []string{"chat-completions"},
-			"quota_provider":          true,
-			"management_api":          true,
+			"auth_provider":  true,
+			"quota_provider": true,
+			"management_api": true,
 		},
 	}
 }

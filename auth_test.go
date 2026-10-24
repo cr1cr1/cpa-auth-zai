@@ -366,6 +366,32 @@ func TestLoginPollSuccess(t *testing.T) {
 	}
 }
 
+// Acceptance: organization and project metadata survive login persistence and
+// later auth.parse normalization.
+func TestLoginMetadataSurvivesStorageParse(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	authLoginRoutes(t, func() string { return authReadyBody() })
+	started := authStart(t)
+	login := authPoll(t, started.State)
+	if login.Status != pluginapi.AuthLoginStatusSuccess {
+		t.Fatalf("login status = %q (%s), want success", login.Status, login.Message)
+	}
+	payload := fmt.Sprintf(`{"RawJSON":%q}`, base64.StdEncoding.EncodeToString(login.Auth.StorageJSON))
+	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthParse, payload)
+	if errHandle != nil {
+		t.Fatalf("auth.parse failed: %v", errHandle)
+	}
+	var parsed pluginapi.AuthParseResponse
+	decodeAuthResult(t, raw, &parsed)
+	if !parsed.Handled {
+		t.Fatalf("login storage not handled: %+v", parsed)
+	}
+	if len(parsed.Auth.Metadata) != 3 || parsed.Auth.Metadata["type"] != providerID || parsed.Auth.Metadata["organization_id"] != "org-default" || parsed.Auth.Metadata["project_id"] != "proj-default" {
+		t.Fatalf("parsed Auth.Metadata = %v", parsed.Auth.Metadata)
+	}
+}
+
 // Acceptance: a second poll inside the upstream interval must skip upstream.
 func TestPollRateLimitSkipsUpstream(t *testing.T) {
 	resetAuthFlows()
@@ -494,8 +520,9 @@ func TestConcurrentPollSingleExchange(t *testing.T) {
 	}
 }
 
-// Acceptance: refresh rebuilds the stored record without any upstream call.
-func TestRefreshMakesNoUpstreamCall(t *testing.T) {
+// Acceptance: z.ai has no verified token refresh; renewal requires a new
+// browser sign-in and must not contact upstream.
+func TestRefreshRequiresNewBrowserSignIn(t *testing.T) {
 	resetAuthFlows()
 	t.Cleanup(resetAuthFlows)
 	fake := installAuthFakeHost(t, func(call authHostCall) []byte {
@@ -504,21 +531,9 @@ func TestRefreshMakesNoUpstreamCall(t *testing.T) {
 	})
 	storageJSON := `{"version":1,"type":"zai","oauth_access_token":"oauth-tok","email":"` + authTestEmail + `"}`
 	payload := fmt.Sprintf(`{"AuthID":"zai-user-example-com","StorageJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
-	raw, errHandle := callAuthMethod(t, pluginabi.MethodAuthRefresh, payload)
-	if errHandle != nil {
-		t.Fatalf("auth.refresh failed: %v", errHandle)
-	}
-	var resp pluginapi.AuthRefreshResponse
-	decodeAuthResult(t, raw, &resp)
-	if resp.Auth.Provider != providerID || resp.Auth.ID != "zai-user-example-com" || resp.Auth.Label != "Z.ai "+authTestEmail {
-		t.Fatalf("refresh Auth = %+v", resp.Auth)
-	}
-	var storage zaiStorage
-	if errUnmarshal := json.Unmarshal(resp.Auth.StorageJSON, &storage); errUnmarshal != nil || storage.OAuthAccessToken != "oauth-tok" {
-		t.Fatalf("refresh StorageJSON = %s (%v)", resp.Auth.StorageJSON, errUnmarshal)
-	}
-	if until := time.Until(resp.NextRefreshAfter); until < 23*time.Hour || until > 25*time.Hour {
-		t.Fatalf("NextRefreshAfter = %v (~%v), want ~24h", resp.NextRefreshAfter, until)
+	perr := testCallErr(t, pluginabi.MethodAuthRefresh, []byte(payload))
+	if perr.Code != "unsupported_operation" || perr.Message != "z.ai login renewal requires a new browser sign-in" || perr.HTTPStatus != http.StatusNotImplemented {
+		t.Fatalf("auth.refresh error = %+v", perr)
 	}
 	if calls := len(fake.recorded()); calls != 0 {
 		t.Fatalf("refresh made %d upstream calls, want 0", calls)
@@ -542,8 +557,8 @@ func TestNoKeyManagementRequests(t *testing.T) {
 	})
 	storageJSON := `{"version":1,"type":"zai","oauth_access_token":"oauth-tok","email":"` + authTestEmail + `"}`
 	refreshPayload := fmt.Sprintf(`{"StorageJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
-	if _, errHandle := callAuthMethod(t, pluginabi.MethodAuthRefresh, refreshPayload); errHandle != nil {
-		t.Fatalf("auth.refresh failed: %v", errHandle)
+	if perr := testCallErr(t, pluginabi.MethodAuthRefresh, []byte(refreshPayload)); perr.Code != "unsupported_operation" {
+		t.Fatalf("auth.refresh error = %+v, want unsupported_operation", perr)
 	}
 	parsePayload := fmt.Sprintf(`{"RawJSON":%q}`, base64.StdEncoding.EncodeToString([]byte(storageJSON)))
 	if _, errHandle := callAuthMethod(t, pluginabi.MethodAuthParse, parsePayload); errHandle != nil {

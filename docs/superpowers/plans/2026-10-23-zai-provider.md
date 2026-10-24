@@ -37,11 +37,12 @@ sources:
 
 ## Status (2026-10-24)
 
-- Tasks 1–4 implemented and unit-tested (59 tests, race-clean); Task 6 packaging done (`make build` artifact, README, rollback docs).
+- Tasks 1–4 implemented and unit-tested; Task 6 packaging uses `mise run build` and the README install steps.
 - Live integration verified in a disposable sibling of the operator's CPA v8 container: registration, live login start/pending-poll/cancel, management-only history route, quota 404 semantics.
 - Review hardening (poll-credential server-side only, flex-number quota decode, sanitized usage errors, https authorize check, expiry clamp, stream-fallback tests) committed as 63ffe22.
 - Task 5 remains open at the documented scope gate: the deployed management UI has no timezone preference to supply (see docs/compatibility.md); extending it is external-repository work needing approval.
-- Gated account run completed 2026-10-24: sign-in, quota, and history verified live; token-only model execution hit the plan stop condition — z.ai rejects login tokens on all known model endpoints (see docs/compatibility.md). Executor stays as built; no API-key fallback. This is a draft plan for review, not approval to implement.
+- Gated account run completed 2026-10-24: sign-in, quota, and history verified live; token-only model execution hit the plan stop condition — z.ai rejects login tokens on all known model endpoints (see docs/compatibility.md). No API-key fallback exists.
+- Review follow-up [issue 0003](</mnt/linux2/dev/cpa-auth-zai/docs/issues/0003-provider-review-fixes.md>) disables model and executor registration until a live token-only completion succeeds. Login, quota, and history remain active; refresh requires a new browser sign-in.
 
 ## Requirements
 

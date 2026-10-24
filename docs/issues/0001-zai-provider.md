@@ -13,7 +13,7 @@ Create a CPA plugin in this workspace for browser authentication, account-specif
 
 ## Current state
 
-Implemented and integration-tested (2026-10-23). The plugin builds as `cpa-auth-zai-v0.1.0.so`, loads in the real CPA v8 docker image, registers auth/model/executor/quota/management capabilities, and starts live z.ai hosted sign-in flows. Unit tests (47) and race runs pass; the [plan](</mnt/linux2/dev/cpa-auth-zai/docs/superpowers/plans/2026-10-23-zai-provider.md>) and [compatibility record](</mnt/linux2/dev/cpa-auth-zai/docs/compatibility.md>) track what is verified.
+Implemented and integration-tested (2026-10-23). The plugin builds as `cpa-auth-zai-v0.1.0.so`, loads in the real CPA v8 docker image, and starts live z.ai hosted sign-in flows. After [issue 0003](0003-provider-review-fixes.md), registration exposes auth, quota, and management only; model and executor registration is disabled while z.ai rejects login-token inference. The [plan](</mnt/linux2/dev/cpa-auth-zai/docs/superpowers/plans/2026-10-23-zai-provider.md>) and [compatibility record](</mnt/linux2/dev/cpa-auth-zai/docs/compatibility.md>) track what is verified.
 
 ## Completion
 

@@ -56,7 +56,7 @@ func registration() map[string]any {
 			"Version":          pluginVersion,
 			"Author":           "cri",
 			"GitHubRepository": "https://github.com/router-for-me/cpa-auth-zai",
-			"Logo":             "",
+			"Logo":             "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
 			"ConfigFields": []map[string]any{{
 				"Name":        "history-timezone",
 				"Type":        pluginapi.ConfigFieldTypeString,

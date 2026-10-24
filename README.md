@@ -39,10 +39,12 @@ plugins:
 | Capability | Detail |
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
-| `model_provider` | Per-account `glm-5.3` and `glm-5.3-flash` catalog from the official GLM Coding Plan model set. |
+| `model_provider` | Live Coding Plan catalog from `api.z.ai/api/coding/paas/v4/models`, using the business token derived from OAuth login. No fixed-model fallback. |
 | `executor` | OAuth-only chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`. Live inference remains unverified after earlier provider-side token rejections. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
+
+Plugin cards and the plugin-resource sidebar use the official z.ai SVG. General provider branding belongs to the management UI and is not configurable through the plugin API.
 
 ## Login
 

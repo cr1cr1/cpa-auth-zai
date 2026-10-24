@@ -17,7 +17,7 @@ Earlier live inference attempts failed. The operator explicitly instructed the p
 
 - Registration advertises `model_provider` and `executor`.
 - Executor scope is `oauth`; input and output formats are `chat-completions`.
-- CPA binds `glm-5.3` and `glm-5.3-flash` to each valid z.ai credential through `model.for_auth`.
+- CPA binds account models to each valid z.ai credential through `model.for_auth`. [Issue 0011](0011-provider-model-catalog-logo.md) replaces the initial fixed pair with live provider discovery.
 - Static discovery remains empty; account models come only from authenticated records.
 - Execution uses login-derived tokens only. No API-key path exists.
 - Auth, quota, usage history, and logging behavior stay unchanged.

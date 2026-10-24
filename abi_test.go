@@ -25,6 +25,7 @@ func TestRegistrationExposesOAuthProvider(t *testing.T) {
 		Metadata      struct {
 			Name    string `json:"Name"`
 			Version string `json:"Version"`
+			Logo    string `json:"Logo"`
 		} `json:"metadata"`
 		Capabilities map[string]any `json:"capabilities"`
 	}
@@ -36,6 +37,9 @@ func TestRegistrationExposesOAuthProvider(t *testing.T) {
 	}
 	if registration.Metadata.Name != "Z.AI" || registration.Metadata.Version == "" {
 		t.Fatalf("metadata = %+v", registration.Metadata)
+	}
+	if registration.Metadata.Logo != "https://z-cdn.chatglm.cn/z-ai/static/logo.svg" {
+		t.Fatalf("logo = %q, want the official z.ai SVG", registration.Metadata.Logo)
 	}
 	for _, capability := range []string{"auth_provider", "model_provider", "executor", "quota_provider", "management_api"} {
 		if registration.Capabilities[capability] != true {

@@ -17,6 +17,7 @@ const (
 	monitorBase = apiZaiBase + "/api/monitor"
 
 	codingChatCompletionsURL = apiZaiBase + "/api/coding/paas/v4/chat/completions"
+	codingModelsURL          = apiZaiBase + "/api/coding/paas/v4/models"
 	usageDetailURL           = monitorBase + "/token-usage/usage-detail"
 	quotaLimitURL            = monitorBase + "/usage/quota/limit"
 	businessLoginURL         = apiZaiBase + "/api/auth/z/login"

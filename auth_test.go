@@ -19,7 +19,8 @@ import (
 
 const (
 	authTestFlowID  = "flow-123"
-	authTestAuthURL = "https://zcode.z.ai/oauth/authorize?flow=flow-123&state=upstream-state"
+	authTestState   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	authTestAuthURL = "https://zcode.z.ai/oauth/authorize?flow=flow-123&state=" + authTestState
 	authTestEmail   = "user@example.com"
 )
 
@@ -198,8 +199,8 @@ func requireHexToken(t *testing.T, value string, length int) {
 	}
 }
 
-// Acceptance: login start exchanges a poll token for an upstream authorize URL,
-// returns a 64-hex CPA state, and keeps the poll token out of the URL.
+// Acceptance: login start preserves the upstream authorize URL and shares its
+// state with CPA while keeping the poll token out of the URL.
 
 // lookupAuthFlow reads plugin-private login state for assertions; it lives in
 // the test build only because production code must not depend on it.
@@ -227,8 +228,8 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 		return authHostEnvelope(200, authInitBody(time.Now().Add(4*time.Minute).UTC().Format(time.RFC3339), 2))
 	})
 	resp := authStart(t)
-	if resp.Provider != providerID {
-		t.Fatalf("start response = %+v", resp)
+	if resp.Provider != providerID || resp.State != authTestState || resp.URL != authTestAuthURL {
+		t.Fatalf("start response must preserve upstream URL and state: %+v", resp)
 	}
 	requireHexToken(t, resp.State, 64)
 	authorizeURL, errParse := url.Parse(resp.URL)
@@ -262,6 +263,20 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 	logs := fake.recordedLogs()
 	if len(logs) != 1 || logs[0].Level != "info" || !strings.Contains(logs[0].Message, "OAuth login started") {
 		t.Fatalf("login start logs = %+v", logs)
+	}
+}
+
+// Acceptance: CPA and z.ai need a shared state, so a missing upstream state is
+// an error rather than a generated replacement.
+func TestLoginStartRequiresUpstreamState(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		return authHostEnvelope(200, `{"code":0,"data":{"flow_id":"flow-123","authorize_url":"https://zcode.z.ai/oauth/authorize?flow=flow-123"}}`)
+	})
+	_, errHandle := handleCall(pluginabi.MethodAuthLoginStart, []byte(`{"Provider":"zai","host_callback_id":"cb-1"}`))
+	if errHandle == nil || !strings.Contains(errHandle.Error(), "missing state") {
+		t.Fatalf("login start error = %v, want missing state", errHandle)
 	}
 }
 

@@ -1,7 +1,7 @@
 ---
 type: Issue
 title: Accept a manually pasted z.ai OAuth callback
-description: Return CPA's session state in the z.ai authorize URL and retain HTTP status when z.ai returns an empty poll error.
+description: Share z.ai's original state with CPA and retain HTTP status when z.ai returns an empty poll error.
 status: draft
 issue_status: done
 ---
@@ -13,7 +13,7 @@ CPA registers the plugin's random session state, but the z.ai authorize URL reta
 
 ## Acceptance
 
-- The authorize URL keeps its upstream parameters and replaces `state` with the state returned to CPA.
+- The authorize URL stays unchanged; CPA and the plugin flow reuse z.ai's original `state`. [Issue 0009](0009-preserve-zai-oauth-state.md) corrected the initial replacement approach after live z.ai authorization rejected it.
 - A callback pasted from that URL contains the state registered by CPA, so the existing CPA v8 manual-callback endpoint accepts it. Hosted polling completes credential exchange; no local listener is required.
 - An empty non-2xx poll response reports its HTTP status.
 - No API key is created, imported, or used.

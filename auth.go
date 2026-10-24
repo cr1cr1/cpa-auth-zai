@@ -35,8 +35,8 @@ func handleAuthIdentifier([]byte) (any, error) {
 	return map[string]string{"identifier": providerID}, nil
 }
 
-// loginFlow is the plugin-side state of one provider-hosted login: the CPA
-// state is the public key, the poll token is the upstream secret.
+// loginFlow is the plugin-side state of one provider-hosted login: the shared
+// CPA/z.ai state is the public key, the poll token is the upstream secret.
 type loginFlow struct {
 	pollToken    string
 	flowID       string
@@ -194,13 +194,10 @@ func handleAuthLoginStart(payload []byte) (result any, err error) {
 	if errParseURL != nil || authorizeURL.Scheme != "https" || authorizeURL.Host == "" {
 		return nil, fmt.Errorf("z.ai cli init returned an invalid authorize url")
 	}
-	state, errState := randomHex(32)
-	if errState != nil {
-		return nil, errState
+	state := authorizeURL.Query().Get("state")
+	if state == "" {
+		return nil, fmt.Errorf("z.ai cli init response missing state")
 	}
-	query := authorizeURL.Query()
-	query.Set("state", state)
-	authorizeURL.RawQuery = query.Encode()
 	expiresAt := time.Now().Add(defaultLoginTTL)
 	if parsed, ok := parseUpstreamExpiry(init.Data.ExpiresAt); ok && parsed.After(time.Now()) && parsed.Before(time.Now().Add(24*time.Hour)) {
 		expiresAt = parsed
@@ -225,7 +222,7 @@ func handleAuthLoginStart(payload []byte) (result any, err error) {
 	// reaches the browser may carry the upstream poll token or flow id.
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  providerID,
-		URL:       authorizeURL.String(),
+		URL:       init.Data.AuthorizeURL,
 		State:     state,
 		ExpiresAt: expiresAt,
 	}, nil

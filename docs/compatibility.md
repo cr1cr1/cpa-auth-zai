@@ -37,7 +37,7 @@ Consequence: per the plan's stop condition, token-only execution stops here. No 
 | C ABI (exports, host struct, envelope) | Verified (source) | `sdk/pluginabi`, `examples/plugin/*/go/main.go` |
 | Capability keys, schema_version 6 | Verified (source) | `internal/pluginhost/rpc_schema.go` |
 | Auth start/poll flow through management endpoints | Verified (source) | `internal/api/handlers/management/auth_files_provider_oauth.go` |
-| Manual callback lookup uses the authorize URL `state`; it must match `AuthLoginStartResponse.State` | Verified (source and regression test) 2026-10-24 | `internal/api/handlers/management/oauth_callback.go`; `auth_test.go` |
+| Manual callback lookup requires the authorize URL `state` to match `AuthLoginStartResponse.State`; z.ai requires its original state, so the plugin reuses it | Verified (source, operator, and regression test) 2026-10-24 | `internal/api/handlers/management/oauth_callback.go`; `auth_test.go`; replacing the state caused live z.ai authorization failure |
 | Plugin RPC wire shapes (executor, quota, management) | Verified (source) | `internal/pluginhost/rpc_schema.go`, `rpc_client_stream.go`, `stream_bridge.go`, `host_callbacks.go` |
 | Server logging through `host.log` with request context | Verified (source) | `internal/pluginhost/host_callbacks.go`; no plugin log file is used |
 | Plugin discovery path `plugins/<os>/<arch>/<id>-v<version>.so` | Verified (source) | `internal/pluginhost/platform.go` |

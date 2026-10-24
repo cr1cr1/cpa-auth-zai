@@ -191,6 +191,9 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 	if errState != nil {
 		return nil, errState
 	}
+	query := authorizeURL.Query()
+	query.Set("state", state)
+	authorizeURL.RawQuery = query.Encode()
 	expiresAt := time.Now().Add(defaultLoginTTL)
 	if parsed, ok := parseUpstreamExpiry(init.Data.ExpiresAt); ok && parsed.After(time.Now()) && parsed.Before(time.Now().Add(24*time.Hour)) {
 		expiresAt = parsed
@@ -215,7 +218,7 @@ func handleAuthLoginStart(payload []byte) (any, error) {
 	// reaches the browser may carry the upstream poll token or flow id.
 	return pluginapi.AuthLoginStartResponse{
 		Provider:  providerID,
-		URL:       init.Data.AuthorizeURL,
+		URL:       authorizeURL.String(),
 		State:     state,
 		ExpiresAt: expiresAt,
 	}, nil
@@ -269,7 +272,8 @@ func exchangeLoginPoll(callbackID string, flow *loginFlow) (resp *pluginapi.Auth
 		return nil, errDo, false
 	}
 	if pollHTTP.StatusCode < 200 || pollHTTP.StatusCode > 299 {
-		return pollError("z.ai poll failed: %s", pollHTTP.Body, flow.pollToken), nil, false
+		message := upstreamError(pollHTTP.StatusCode, pollHTTP.Body, flow.pollToken)
+		return &pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusError, Message: "z.ai poll failed: " + message.Error()}, nil, false
 	}
 	var poll cliPollResponse
 	if errUnmarshal := json.Unmarshal(pollHTTP.Body, &poll); errUnmarshal != nil {

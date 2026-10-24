@@ -46,7 +46,7 @@ Quota and usage history are the active features. Model and executor capabilities
 
 ## Login
 
-Start the flow from the CPA management UI (provider `zai`) and complete sign-in in your browser — the browser may be on any machine. The plugin polls z.ai's hosted login endpoint; no callback port, desktop URI handler, or localhost redirect is required.
+Start the flow from the CPA management UI (provider `zai`) and complete sign-in in your browser — the browser may be on any machine. If z.ai redirects to its hosted callback page, paste the complete callback URL into the CPA login modal. The plugin polls z.ai's hosted login endpoint; no callback port, desktop URI handler, or localhost redirect is required.
 
 ## Status and evidence tiers
 

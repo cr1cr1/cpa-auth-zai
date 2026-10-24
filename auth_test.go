@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ import (
 
 const (
 	authTestFlowID  = "flow-123"
-	authTestAuthURL = "https://zcode.z.ai/oauth/authorize?flow=flow-123"
+	authTestAuthURL = "https://zcode.z.ai/oauth/authorize?flow=flow-123&state=upstream-state"
 	authTestEmail   = "user@example.com"
 )
 
@@ -209,10 +210,20 @@ func TestLoginStartReturnsURLAndState(t *testing.T) {
 		return authHostEnvelope(200, authInitBody(time.Now().Add(4*time.Minute).UTC().Format(time.RFC3339), 2))
 	})
 	resp := authStart(t)
-	if resp.Provider != providerID || resp.URL != authTestAuthURL {
+	if resp.Provider != providerID {
 		t.Fatalf("start response = %+v", resp)
 	}
 	requireHexToken(t, resp.State, 64)
+	authorizeURL, errParse := url.Parse(resp.URL)
+	if errParse != nil {
+		t.Fatalf("parse authorize URL: %v", errParse)
+	}
+	if got := authorizeURL.Query().Get("state"); got != resp.State {
+		t.Fatalf("authorize state = %q, want CPA state %q", got, resp.State)
+	}
+	if got := authorizeURL.Query().Get("flow"); got != authTestFlowID {
+		t.Fatalf("authorize flow = %q, want %q", got, authTestFlowID)
+	}
 	if resp.ExpiresAt.Before(time.Now()) || resp.ExpiresAt.After(time.Now().Add(defaultLoginTTL)) {
 		t.Fatalf("ExpiresAt outside clamp window: %v", resp.ExpiresAt)
 	}
@@ -322,6 +333,24 @@ func TestLoginPollPending(t *testing.T) {
 	}
 	if want := "Bearer " + flow.pollToken; want == "Bearer " {
 		t.Fatalf("flow poll token empty")
+	}
+}
+
+// Acceptance: an empty upstream failure retains the HTTP status needed to
+// diagnose a rejected poll.
+func TestLoginPollEmptyFailureIncludesStatus(t *testing.T) {
+	resetAuthFlows()
+	t.Cleanup(resetAuthFlows)
+	installAuthFakeHost(t, func(call authHostCall) []byte {
+		if call.URL == cliInitURL {
+			return authHostEnvelope(200, authInitBody(nil, 0))
+		}
+		return authHostEnvelope(http.StatusBadGateway, "")
+	})
+	started := authStart(t)
+	resp := authPoll(t, started.State)
+	if resp.Status != pluginapi.AuthLoginStatusError || !strings.Contains(resp.Message, "502") {
+		t.Fatalf("poll = %+v, want error containing HTTP 502", resp)
 	}
 }
 

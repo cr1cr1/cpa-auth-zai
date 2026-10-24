@@ -52,7 +52,7 @@ func registration() map[string]any {
 	return map[string]any{
 		"schema_version": pluginabi.SchemaVersion,
 		"metadata": map[string]any{
-			"Name":             pluginID,
+			"Name":             "Z.AI",
 			"Version":          pluginVersion,
 			"Author":           "cri",
 			"GitHubRepository": "https://github.com/router-for-me/cpa-auth-zai",

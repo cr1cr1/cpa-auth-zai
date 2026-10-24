@@ -35,7 +35,7 @@ func TestRegistrationBlocksTokenOnlyInference(t *testing.T) {
 	if registration.SchemaVersion != 6 {
 		t.Fatalf("schema_version = %d, want 6", registration.SchemaVersion)
 	}
-	if registration.Metadata.Name != pluginID || registration.Metadata.Version == "" {
+	if registration.Metadata.Name != "Z.AI" || registration.Metadata.Version == "" {
 		t.Fatalf("metadata = %+v", registration.Metadata)
 	}
 	for _, capability := range []string{"auth_provider", "quota_provider", "management_api"} {

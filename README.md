@@ -13,7 +13,7 @@ mise run build  # dist/cpa-auth-zai.so
 
 ## Release builds
 
-The tag workflow uses GoReleaser and Zig to build the c-shared plugin for Linux, macOS, and Windows on amd64 and arm64. It runs on macOS because Apple frameworks require the native Clang SDK. Archives contain the plugin library with version and target in its name, its generated C header, and this README. Rename the library to CPA's `cpa-auth-zai-v<version>` form when installing it. For a local snapshot on macOS, install Zig 0.14.1 and run `goreleaser release --snapshot --clean`.
+The tag workflow uses GoReleaser and Zig to build the c-shared plugin for Linux, macOS, and Windows on amd64 and arm64. Ubuntu builds the Linux and Windows targets; macOS builds the Darwin targets with native Clang. GoReleaser publishes the release. Archives contain the plugin library with version and target in its name, its generated C header, and this README. Rename the library to CPA's `cpa-auth-zai-v<version>` form when installing it. For a local snapshot on macOS, install Zig 0.14.1 and run `goreleaser release --snapshot --clean`.
 
 ## Install (Linux amd64)
 

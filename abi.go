@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
@@ -27,6 +28,9 @@ func registerHandler(method string, h handler) {
 func handleCall(method string, payload []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		if errConfigure := parsePluginConfig(lifecycleConfigYAML(payload)); errConfigure != nil {
+			return nil, errConfigure
+		}
 		return okEnvelope(registration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
 		return okEnvelope(map[string]any{})
@@ -53,7 +57,12 @@ func registration() map[string]any {
 			"Author":           "cri",
 			"GitHubRepository": "https://github.com/router-for-me/cpa-auth-zai",
 			"Logo":             "",
-			"ConfigFields":     []any{},
+			"ConfigFields": []map[string]any{{
+				"Name":        "history-timezone",
+				"Type":        pluginapi.ConfigFieldTypeString,
+				"Default":     "",
+				"Description": "IANA timezone for usage-history display when the request omits timezone; empty uses the provider's source timezone.",
+			}},
 		},
 		"capabilities": map[string]any{
 			"auth_provider":           true,

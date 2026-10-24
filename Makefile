@@ -5,7 +5,8 @@ SO := $(DIST)/$(PLUGIN_ID).so
 # Override for `make install`, e.g. the CPA plugins directory mounted by your deployment.
 PLUGIN_DIR ?= /home/cri/.config/containers/cli-proxy-api/plugins/linux/amd64
 
-export GOCACHE ?= $(shell mktemp -d)
+export GOCACHE ?= /tmp/$(PLUGIN_ID)-gocache
+export GOMODCACHE ?= /tmp/$(PLUGIN_ID)-gomod
 
 .PHONY: test vet fmt build install clean
 

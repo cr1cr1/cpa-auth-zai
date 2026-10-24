@@ -94,6 +94,11 @@ func handleManagementHandle(payload []byte) (any, error) {
 		return managementError(http.StatusBadRequest, "auth_index is required"), nil
 	}
 	requestedZone := query("timezone")
+	if requestedZone == "" {
+		// Operator-level fallback (plugins.configs.cpa-auth-zai.history-timezone)
+		// until the management UI gains a timezone preference.
+		requestedZone = preferredTimezone()
+	}
 	if requestedZone != "" {
 		if _, errLoad := time.LoadLocation(requestedZone); errLoad != nil {
 			return managementError(http.StatusBadRequest, "unknown timezone"), nil

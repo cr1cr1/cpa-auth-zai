@@ -8,7 +8,8 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 builds:
   - id: plugin
-    binary: cpa-auth-zai-v{{ .Version }}-{{ .Os }}-{{ .Arch }}
+    # binary: cpa-auth-zai-v{{ .Version }}-{{ .Os }}-{{ .Arch }}
+    binary: cpa-auth-zai
     buildmode: c-shared
     env:
       - CGO_ENABLED=1

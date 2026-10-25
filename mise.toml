@@ -3,6 +3,7 @@
 [tools]
 go = "1.27"
 golangci-lint = "2.15"
+goreleaser = "2.19"
 
 [env]
 # Default caches are read-only on some container hosts.
@@ -22,13 +23,31 @@ run = "gofmt -w *.go"
 [tasks.build]
 run = """
 set -e
-CGO_ENABLED=1 go build -buildmode=c-shared -o dist/cpa-auth-zai.so .
-rm -f dist/cpa-auth-zai.h
+goreleaser build --clean --snapshot --single-target
 """
 
 [tasks.install]
-description = "Copy the plugin .so into the CPA plugins directory (set CPA_PLUGIN_DIR=...)"
-run = "set -euo pipefail; install -m 0755 dist/cpa-auth-zai.so \"${CPA_PLUGIN_DIR}/\""
+description = "Install the current-platform GoReleaser plugin (set CPA_PLUGIN_DIR=...)"
+run = """
+set -eu
+: "${CPA_PLUGIN_DIR:?set CPA_PLUGIN_DIR}"
+os="$(go env GOOS)"
+arch="$(go env GOARCH)"
+case "$os" in
+  linux) ext=so ;;
+  darwin) ext=dylib ;;
+  windows) ext=dll ;;
+  *) echo "unsupported platform: $os" >&2; exit 1 ;;
+esac
+set -- dist/plugin_"${os}"_"${arch}"_*/cpa-auth-zai-v*-"${os}"-"${arch}"."${ext}"
+if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+  echo "expected one $os/$arch plugin in dist; run mise run build" >&2
+  exit 1
+fi
+name="$(basename "$1")"
+dest="${name%-${os}-${arch}.${ext}}.${ext}"
+install -m 0755 "$1" "${CPA_PLUGIN_DIR}/${dest}"
+"""
 
 [tasks.clean]
 run = "rm -rf dist"

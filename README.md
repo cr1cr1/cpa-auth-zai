@@ -54,6 +54,8 @@ plugins:
 
 Streaming executor requests always send `stream: true` to z.ai, including when the input payload omits `stream` or sets it to `false`. Non-streaming requests keep their payloads unchanged.
 
+Model inference sends ZCode client fingerprint headers for identity, platform, OS, timezone, session, and request tracing. The pinned identity is ZCode 3.10.2. The plugin does not inspect an installed ZCode client or create a device-identity file. These headers apply to inference only, not account APIs.
+
 Plugin cards and the plugin-resource sidebar use the official z.ai SVG. General provider branding belongs to the management UI and is not configurable through the plugin API.
 
 ## Login

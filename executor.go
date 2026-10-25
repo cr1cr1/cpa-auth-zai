@@ -174,7 +174,7 @@ func normalizeExecutorFormat(format string) string {
 	}
 }
 
-func executorRequestHeaders(request *executorRequest, bearer, zcodeJWT string) map[string][]string {
+func executorRequestHeaders(request *executorRequest, bearer, zcodeJWT string) (map[string][]string, error) {
 	headers := codingRequestHeaders(bearer, zcodeJWT)
 	format := normalizeExecutorFormat(request.SourceFormat)
 	if format == "" {
@@ -183,7 +183,10 @@ func executorRequestHeaders(request *executorRequest, bearer, zcodeJWT string) m
 	if format == "claude" {
 		headers["anthropic-version"] = []string{"2023-06-01"}
 	}
-	return headers
+	if errFingerprint := addZCodeFingerprint(headers, format); errFingerprint != nil {
+		return nil, errFingerprint
+	}
+	return headers, nil
 }
 
 // handleExecute forwards the host-translated payload with the provisioned API
@@ -208,7 +211,11 @@ func handleExecute(payload []byte) (any, error) {
 	if errURL != nil {
 		return nil, errURL
 	}
-	response, errCall := hostDo(request.HostCallbackID, "POST", upstreamURL, executorRequestHeaders(request, apiKey, storage.ZcodeJWT), request.Payload)
+	headers, errHeaders := executorRequestHeaders(request, apiKey, storage.ZcodeJWT)
+	if errHeaders != nil {
+		return nil, errHeaders
+	}
+	response, errCall := hostDo(request.HostCallbackID, "POST", upstreamURL, headers, request.Payload)
 	if errCall != nil {
 		return nil, fmt.Errorf("z.ai inference request failed: %s", sanitizeExecutorError(errCall.Error(), apiKey))
 	}
@@ -270,12 +277,16 @@ func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*
 	if errURL != nil {
 		return nil, errURL
 	}
+	headers, errHeaders := executorRequestHeaders(request, candidate, zcodeJWT)
+	if errHeaders != nil {
+		return nil, errHeaders
+	}
 	result, errCall := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
 		HostCallbackID: request.HostCallbackID,
 		Request: hostHTTPRequestSpec{
 			Method:  "POST",
 			URL:     upstreamURL,
-			Headers: executorRequestHeaders(request, candidate, zcodeJWT),
+			Headers: headers,
 			Body:    request.Payload,
 		},
 	})
@@ -415,7 +426,7 @@ func businessEnvelopeFailed(body []byte) bool {
 func codingRequestHeaders(bearer, zcodeJWT string) map[string][]string {
 	headers := map[string][]string{
 		"Content-Type":  {"application/json"},
-		"Accept":        {"application/json"},
+		"Accept":        {"application/json, text/event-stream"},
 		"Authorization": {"Bearer " + bearer},
 	}
 	if token := strings.TrimSpace(zcodeJWT); token != "" {

@@ -171,6 +171,7 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	if got := doRequest.Request.Headers["X-Zcode-Token"]; len(got) != 1 || got[0] != "tok-zcode" {
 		t.Fatalf("X-Zcode-Token = %v, want the login-derived ZCode JWT", got)
 	}
+	assertZCodeFingerprint(t, doRequest.Request.Headers, "4.0.39")
 
 	var response struct {
 		Payload  []byte              `json:"Payload"`
@@ -197,6 +198,7 @@ func TestExecuteRoutesNativeOpenAIResponses(t *testing.T) {
 		if !bytes.Equal(upstream.Request.Body, payload) {
 			t.Errorf("payload changed: %s", upstream.Request.Body)
 		}
+		assertZCodeFingerprint(t, upstream.Request.Headers, "4.0.39")
 		return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"resp-1","object":"response","status":"completed","output":[]}`)}, nil
 	})
 	request := testJSON(t, map[string]any{
@@ -229,6 +231,7 @@ func TestExecuteRoutesAnthropicMessages(t *testing.T) {
 		if got := upstream.Request.Headers["anthropic-version"]; len(got) != 1 || got[0] != "2023-06-01" {
 			t.Errorf("anthropic-version = %v", got)
 		}
+		assertZCodeFingerprint(t, upstream.Request.Headers, "4.0.27")
 		if !bytes.Equal(upstream.Request.Body, payload) {
 			t.Errorf("payload changed: %s", upstream.Request.Body)
 		}
@@ -434,6 +437,7 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 			if got := upstream.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer key-id.key-secret" {
 				t.Fatalf("Authorization = %v, want provisioned API key", got)
 			}
+			assertZCodeFingerprint(t, upstream.Request.Headers, "4.0.39")
 			return map[string]any{"status_code": 200, "stream_id": "h1"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
 			switch index {
@@ -601,6 +605,7 @@ func TestExecuteStreamRoutesAnthropicMessagesAndPreservesTerminal(t *testing.T) 
 			if got := upstream.Request.Headers["anthropic-version"]; len(got) != 1 || got[0] != "2023-06-01" {
 				t.Errorf("anthropic-version = %v", got)
 			}
+			assertZCodeFingerprint(t, upstream.Request.Headers, "4.0.27")
 			return map[string]any{"status_code": 200, "stream_id": "h-anthropic"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
 			return map[string]any{"payload": frame, "done": true}, nil

@@ -51,8 +51,8 @@ func TestRegistrationExposesOAuthProvider(t *testing.T) {
 	}
 	for _, key := range []string{"executor_input_formats", "executor_output_formats"} {
 		formats, ok := registration.Capabilities[key].([]any)
-		if !ok || len(formats) != 2 || formats[0] != "chat-completions" || formats[1] != "openai-responses" {
-			t.Fatalf("%s = %v, want [chat-completions openai-responses]", key, registration.Capabilities[key])
+		if !ok || len(formats) != 3 || formats[0] != "chat-completions" || formats[1] != "openai-responses" || formats[2] != "anthropic" {
+			t.Fatalf("%s = %v, want [chat-completions openai-responses anthropic]", key, registration.Capabilities[key])
 		}
 	}
 }

@@ -136,6 +136,8 @@ func executorUpstreamURL(request *executorRequest) (string, error) {
 		return codingChatCompletionsURL, nil
 	case "openai-response":
 		return codingResponsesURL, nil
+	case "claude":
+		return codingAnthropicURL, nil
 	default:
 		return "", pluginabi.NewError("invalid_request", fmt.Sprintf("unsupported z.ai executor format %q", format), http.StatusBadRequest)
 	}
@@ -143,13 +145,29 @@ func executorUpstreamURL(request *executorRequest) (string, error) {
 
 func normalizeExecutorFormat(format string) string {
 	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "", "openai", "chat-completions", "openai-chat-completions":
+	case "":
+		return ""
+	case "openai", "chat-completions", "openai-chat-completions":
 		return "openai"
 	case "openai-response", "openai-responses", "responses":
 		return "openai-response"
+	case "claude", "anthropic", "anthropic-messages":
+		return "claude"
 	default:
 		return strings.ToLower(strings.TrimSpace(format))
 	}
+}
+
+func executorRequestHeaders(request *executorRequest, bearer, zcodeJWT string) map[string][]string {
+	headers := codingRequestHeaders(bearer, zcodeJWT)
+	format := normalizeExecutorFormat(request.SourceFormat)
+	if format == "" {
+		format = normalizeExecutorFormat(request.Format)
+	}
+	if format == "claude" {
+		headers["anthropic-version"] = []string{"2023-06-01"}
+	}
+	return headers
 }
 
 // handleExecute forwards the host-translated payload with the provisioned API
@@ -174,7 +192,7 @@ func handleExecute(payload []byte) (any, error) {
 	if errURL != nil {
 		return nil, errURL
 	}
-	response, errCall := hostDo(request.HostCallbackID, "POST", upstreamURL, codingRequestHeaders(apiKey, storage.ZcodeJWT), request.Payload)
+	response, errCall := hostDo(request.HostCallbackID, "POST", upstreamURL, executorRequestHeaders(request, apiKey, storage.ZcodeJWT), request.Payload)
 	if errCall != nil {
 		return nil, fmt.Errorf("z.ai inference request failed: %s", sanitizeExecutorError(errCall.Error(), apiKey))
 	}
@@ -237,7 +255,7 @@ func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*
 		Request: hostHTTPRequestSpec{
 			Method:  "POST",
 			URL:     upstreamURL,
-			Headers: codingRequestHeaders(candidate, zcodeJWT),
+			Headers: executorRequestHeaders(request, candidate, zcodeJWT),
 			Body:    request.Payload,
 		},
 	})

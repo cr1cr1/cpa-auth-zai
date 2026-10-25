@@ -18,6 +18,7 @@ const (
 
 	codingChatCompletionsURL = apiZaiBase + "/api/coding/paas/v4/chat/completions"
 	codingResponsesURL       = apiZaiBase + "/api/v1/responses"
+	codingAnthropicURL       = apiZaiBase + "/api/anthropic/v1/messages"
 	codingModelsURL          = apiZaiBase + "/api/coding/paas/v4/models"
 	usageDetailURL           = monitorBase + "/token-usage/usage-detail"
 	quotaLimitURL            = monitorBase + "/usage/quota/limit"

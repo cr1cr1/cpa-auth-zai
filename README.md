@@ -1,6 +1,6 @@
 # cpa-auth-zai
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, Chat Completions and OpenAI Responses execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, Chat Completions, OpenAI Responses, and Anthropic Messages execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
 
 ## Build
 
@@ -42,7 +42,7 @@ plugins:
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
 | `model_provider` | Live Coding Plan catalog from `api.z.ai/api/coding/paas/v4/models`, using the business token derived from OAuth login. No fixed-model fallback. |
-| `executor` | Uses the provisioned project API key and optional `X-Zcode-Token`. Chat Completions uses `api.z.ai/api/coding/paas/v4/chat/completions`; native OpenAI Responses uses `api.z.ai/api/v1/responses`. CPA payload-format metadata selects the endpoint, with no client-specific routing or login-token fallback. Live API-key inference reached model output; native Responses completion remains unverified. |
+| `executor` | Uses the provisioned project API key and optional `X-Zcode-Token`. CPA payload-format metadata selects Chat Completions (`/api/coding/paas/v4/chat/completions`), OpenAI Responses (`/api/v1/responses`), or Anthropic Messages (`/api/anthropic/v1/messages`, with `anthropic-version: 2023-06-01`). No client-specific routing or login-token fallback. A minimal native Responses stream still failed before a terminal event; Anthropic Messages remains live-unverified. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 

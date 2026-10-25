@@ -218,6 +218,76 @@ func TestExecuteRoutesNativeOpenAIResponses(t *testing.T) {
 	}
 }
 
+func TestExecuteRoutesAnthropicMessages(t *testing.T) {
+	payload := []byte(`{"model":"glm-5.3","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		var upstream hostHTTPRequest
+		testDecode(t, call.Payload, &upstream)
+		if upstream.Request.URL != "https://api.z.ai/api/anthropic/v1/messages" {
+			t.Errorf("upstream URL = %q, want native Anthropic Messages endpoint", upstream.Request.URL)
+		}
+		if got := upstream.Request.Headers["anthropic-version"]; len(got) != 1 || got[0] != "2023-06-01" {
+			t.Errorf("anthropic-version = %v", got)
+		}
+		if !bytes.Equal(upstream.Request.Body, payload) {
+			t.Errorf("payload changed: %s", upstream.Request.Body)
+		}
+		return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"msg-1","type":"message","role":"assistant","content":[]}`)}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Format": "claude", "SourceFormat": "anthropic-messages",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":          payload,
+		"host_callback_id": "cb-anthropic",
+	})
+	result := testCallOK(t, pluginabi.MethodExecutorExecute, request)
+	var response struct {
+		Payload []byte `json:"Payload"`
+	}
+	testDecode(t, result, &response)
+	if !bytes.Equal(response.Payload, []byte(`{"id":"msg-1","type":"message","role":"assistant","content":[]}`)) {
+		t.Fatalf("response payload = %s", response.Payload)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+func TestExecuteRoutesLegacyFormatMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		format     string
+		wantURL    string
+		wantHeader string
+	}{
+		{name: "responses", format: "openai-response", wantURL: codingResponsesURL},
+		{name: "anthropic", format: "claude", wantURL: codingAnthropicURL, wantHeader: "2023-06-01"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+				var upstream hostHTTPRequest
+				testDecode(t, call.Payload, &upstream)
+				if upstream.Request.URL != tc.wantURL {
+					t.Errorf("upstream URL = %q, want %q", upstream.Request.URL, tc.wantURL)
+				}
+				if tc.wantHeader != "" {
+					if got := upstream.Request.Headers["anthropic-version"]; len(got) != 1 || got[0] != tc.wantHeader {
+						t.Errorf("anthropic-version = %v", got)
+					}
+				}
+				return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"native-1"}`)}, nil
+			})
+			request := testJSON(t, map[string]any{
+				"AuthProvider": "zai", "Format": tc.format,
+				"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+				"Payload":          []byte(`{"model":"glm-5.3"}`),
+				"host_callback_id": "cb-legacy-format",
+			})
+			testCallOK(t, pluginabi.MethodExecutorExecute, request)
+		})
+	}
+}
+
 func TestExecuteRejectsMixedPayloadAndOutputFormats(t *testing.T) {
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"chat-1"}`)}, nil
@@ -242,7 +312,7 @@ func TestExecuteRejectsUnsupportedFormat(t *testing.T) {
 		return map[string]any{"StatusCode": 200, "Body": []byte(`{}`)}, nil
 	})
 	request := testJSON(t, map[string]any{
-		"AuthProvider": "zai", "Format": "claude",
+		"AuthProvider": "zai", "Format": "gemini",
 		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":          []byte(`{"model":"glm-5.3"}`),
 		"host_callback_id": "cb-unsupported",
@@ -261,7 +331,7 @@ func TestExecuteStreamRejectsUnsupportedFormat(t *testing.T) {
 		return map[string]any{}, nil
 	})
 	request := testJSON(t, map[string]any{
-		"AuthProvider": "zai", "Stream": true, "Format": "claude",
+		"AuthProvider": "zai", "Stream": true, "Format": "gemini",
 		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
 		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
 		"stream_id":   "r-unsupported", "host_callback_id": "cb-unsupported-stream",
@@ -446,6 +516,49 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	}
 	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
 		t.Fatalf("HTTP stream closes = %d, want 1 on normal completion", got)
+	}
+}
+
+func TestExecuteStreamRoutesAnthropicMessagesAndPreservesTerminal(t *testing.T) {
+	frame := []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			var upstream hostHTTPRequest
+			testDecode(t, call.Payload, &upstream)
+			if upstream.Request.URL != "https://api.z.ai/api/anthropic/v1/messages" {
+				t.Errorf("upstream URL = %q", upstream.Request.URL)
+			}
+			if got := upstream.Request.Headers["anthropic-version"]; len(got) != 1 || got[0] != "2023-06-01" {
+				t.Errorf("anthropic-version = %v", got)
+			}
+			return map[string]any{"status_code": 200, "stream_id": "h-anthropic"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": frame, "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true, "Format": "claude", "SourceFormat": "claude",
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","max_tokens":32,"messages":[],"stream":true}`),
+		"stream_id":   "r-anthropic", "host_callback_id": "cb-anthropic-stream",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+	var emitted [][]byte
+	for _, call := range log.all() {
+		if call.Method == pluginabi.MethodHostStreamEmit {
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			emitted = append(emitted, emit.Payload)
+		}
+	}
+	if len(emitted) != 1 || !bytes.Equal(emitted[0], frame) {
+		t.Fatalf("emitted frames = %q, want unchanged message_stop", emitted)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
+		t.Fatalf("HTTP stream closes = %d, want 1", got)
 	}
 }
 

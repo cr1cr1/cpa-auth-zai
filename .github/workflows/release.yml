@@ -11,12 +11,7 @@ env:
 
 jobs:
   goreleaser:
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
@@ -32,20 +27,10 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Select targets for this runner
-        shell: bash
-        run: |
-          cp .goreleaser.yml .goreleaser.runner.yml
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sed -i.bak '/^      - darwin$/d' .goreleaser.runner.yml
-          else
-            sed -i.bak -e '/^      - linux$/d' -e '/^      - windows$/d' .goreleaser.runner.yml
-          fi
-          sed -i.bak "s/sha256sums.txt/sha256sums-$RUNNER_OS.txt/" .goreleaser.runner.yml
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
-          args: release --clean --config .goreleaser.runner.yml
+          args: release --clean --config .goreleaser.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

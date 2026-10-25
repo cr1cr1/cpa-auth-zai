@@ -403,14 +403,27 @@ func logMalformedSSEEvent(callbackID, apiKey string, event []byte) {
 		return
 	}
 	data := strings.Join(dataLines, "\n")
-	if data == "[DONE]" || json.Valid([]byte(data)) {
+	if data == "[DONE]" {
 		return
 	}
-	preview := sanitizeDetail(redactSecrets(data, []string{apiKey}))
+	var decoded any
+	errDecode := json.Unmarshal([]byte(data), &decoded)
+	if errDecode == nil {
+		return
+	}
+	redacted := redactSecrets(data, []string{apiKey})
+	preview := sanitizeDetail(redacted)
 	if preview == "" {
 		preview = "<empty>"
 	}
-	fields := map[string]any{"data": preview}
+	fields := map[string]any{
+		"data":        preview,
+		"data_length": len(data),
+		"parse_error": errDecode.Error(),
+	}
+	if len(redacted) > 300 {
+		fields["tail"] = sanitizeDetail(redacted[len(redacted)-300:])
+	}
 	if eventName != "" {
 		fields["event"] = sanitizeDetail(eventName)
 	}

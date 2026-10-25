@@ -684,10 +684,12 @@ func TestExecuteStreamRoutesNativeResponsesAndPreservesTerminal(t *testing.T) {
 }
 
 func TestDebugMalformedSSELogsSanitizedPreview(t *testing.T) {
+	malformed := `{"response":{"output":[{"arguments":"key-id.key-secret ` + strings.Repeat("x", 350) + "TAIL"
+	splitAt := len(malformed) / 2
 	frames := [][]byte{
 		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
-		[]byte("event: error\ndata: key-id.key-secret"),
-		[]byte(" rejected\n\n"),
+		[]byte("event: error\ndata: " + malformed[:splitAt]),
+		[]byte(malformed[splitAt:] + "\n\n"),
 	}
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		switch call.Method {
@@ -726,8 +728,17 @@ func TestDebugMalformedSSELogsSanitizedPreview(t *testing.T) {
 				t.Fatalf("log level = %q, want debug", entry.Level)
 			}
 			preview := fmt.Sprint(entry.Fields["data"])
-			if strings.Contains(preview, "key-id.key-secret") || !strings.Contains(preview, "[redacted] rejected") {
+			if strings.Contains(preview, "key-id.key-secret") || !strings.Contains(preview, "[redacted]") {
 				t.Fatalf("debug preview = %q, want redacted malformed data", preview)
+			}
+			if got := fmt.Sprint(entry.Fields["data_length"]); got != fmt.Sprint(len(malformed)) {
+				t.Fatalf("data_length = %s, want %d", got, len(malformed))
+			}
+			if got := fmt.Sprint(entry.Fields["parse_error"]); !strings.Contains(got, "unexpected end of JSON input") {
+				t.Fatalf("parse_error = %q, want unexpected end", got)
+			}
+			if got := fmt.Sprint(entry.Fields["tail"]); !strings.Contains(got, "TAIL") {
+				t.Fatalf("tail = %q, want trailing marker", got)
 			}
 		}
 	}

@@ -89,7 +89,7 @@ The key-management API has third-party evidence, not a published z.ai integratio
 
 - OAuth and quota/usage success and failure events use CPA's `host.log` RPC.
 - Pending OAuth polls stay quiet. Upstream errors redact credentials.
-- Malformed upstream SSE events use CPA debug logs with sanitized data previews; stream chunks stay unchanged.
+- Malformed upstream SSE events use CPA debug logs with sanitized previews, tails, lengths, and parse errors; stream chunks stay unchanged.
 - CPA controls log output. The plugin creates no log file.
 
 ## Compatibility

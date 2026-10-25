@@ -52,6 +52,8 @@ plugins:
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 
+Streaming executor requests always send `stream: true` to z.ai, including when the input payload omits `stream` or sets it to `false`. Non-streaming requests keep their payloads unchanged.
+
 Plugin cards and the plugin-resource sidebar use the official z.ai SVG. General provider branding belongs to the management UI and is not configurable through the plugin API.
 
 ## Login

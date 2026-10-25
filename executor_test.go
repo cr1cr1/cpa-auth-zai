@@ -519,6 +519,75 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	}
 }
 
+// Acceptance: the streaming executor always asks z.ai for a stream, including
+// when the input payload omits stream or explicitly disables it.
+func TestExecuteStreamForcesUpstreamStreaming(t *testing.T) {
+	tests := []struct {
+		name    string
+		format  string
+		payload string
+	}{
+		{name: "chat completions omitted", format: "openai", payload: `{"model":"glm-5.3","messages":[]}`},
+		{name: "openai responses omitted", format: "openai-response", payload: `{"model":"glm-5.3","input":"hello"}`},
+		{name: "anthropic messages false", format: "claude", payload: `{"model":"glm-5.3","messages":[],"stream":false}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamPayload []byte
+			testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+				switch call.Method {
+				case pluginabi.MethodHostHTTPDoStream:
+					var upstream hostHTTPRequest
+					testDecode(t, call.Payload, &upstream)
+					upstreamPayload = bytes.Clone(upstream.Request.Body)
+					return map[string]any{"status_code": 200, "stream_id": "h-force-stream"}, nil
+				case pluginabi.MethodHostHTTPStreamRead:
+					return map[string]any{"done": true}, nil
+				default:
+					return map[string]any{}, nil
+				}
+			})
+			request := testJSON(t, map[string]any{
+				"AuthProvider": "zai", "Stream": true, "Format": tc.format, "SourceFormat": tc.format,
+				"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-oauth","api_key":"key-id.key-secret"}`),
+				"Payload":     []byte(tc.payload),
+				"stream_id":   "r-force-stream", "host_callback_id": "cb-force-stream",
+			})
+			testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+			streamPumps.Wait()
+
+			var payload map[string]json.RawMessage
+			if errUnmarshal := json.Unmarshal(upstreamPayload, &payload); errUnmarshal != nil {
+				t.Fatalf("upstream payload is not a JSON object: %s: %v", upstreamPayload, errUnmarshal)
+			}
+			if got := string(payload["stream"]); got != "true" {
+				t.Fatalf("upstream stream = %s, want true; payload = %s", got, upstreamPayload)
+			}
+			delete(payload, "stream")
+			var original map[string]json.RawMessage
+			if errUnmarshal := json.Unmarshal([]byte(tc.payload), &original); errUnmarshal != nil {
+				t.Fatalf("decode original payload: %v", errUnmarshal)
+			}
+			delete(original, "stream")
+			gotFields, _ := json.Marshal(payload)
+			wantFields, _ := json.Marshal(original)
+			if !bytes.Equal(gotFields, wantFields) {
+				t.Fatalf("other fields changed: got %s, want %s", gotFields, wantFields)
+			}
+		})
+	}
+}
+
+func TestStreamingPayloadRequiresObject(t *testing.T) {
+	for _, payload := range []string{"", "null", "[]"} {
+		_, errStream := streamingPayload([]byte(payload))
+		var perr *pluginabi.Error
+		if !errors.As(errStream, &perr) || perr.Code != "invalid_request" || perr.HTTPStatus != 400 {
+			t.Errorf("streamingPayload(%q) error = %v, want invalid_request/400", payload, errStream)
+		}
+	}
+}
+
 func TestExecuteStreamRoutesAnthropicMessagesAndPreservesTerminal(t *testing.T) {
 	frame := []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {

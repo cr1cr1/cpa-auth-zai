@@ -110,6 +110,22 @@ func decodeExecutorRequest(payload []byte) (*executorRequest, error) {
 	return &request, nil
 }
 
+func streamingPayload(payload []byte) ([]byte, error) {
+	var body map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil || body == nil {
+		return nil, pluginabi.NewError("invalid_request", "streaming payload must be a JSON object", http.StatusBadRequest)
+	}
+	if bytes.Equal(bytes.TrimSpace(body["stream"]), []byte("true")) {
+		return payload, nil
+	}
+	body["stream"] = json.RawMessage("true")
+	streamed, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("zai: encode streaming payload: %w", errMarshal)
+	}
+	return streamed, nil
+}
+
 func inferenceAPIKey(storage *zaiStorage) (string, error) {
 	if apiKey := strings.TrimSpace(storage.APIKey); apiKey != "" {
 		return apiKey, nil
@@ -211,8 +227,8 @@ func handleExecute(payload []byte) (any, error) {
 	}, nil
 }
 
-// handleExecuteStream opens the upstream SSE stream through the host and
-// answers asynchronously: headers only, chunks pushed via host.stream.emit.
+// handleExecuteStream enables upstream streaming, opens the upstream SSE stream
+// through the host, and answers asynchronously with chunks via host.stream.emit.
 func handleExecuteStream(payload []byte) (any, error) {
 	request, errDecode := decodeExecutorRequest(payload)
 	if errDecode != nil {
@@ -220,6 +236,10 @@ func handleExecuteStream(payload []byte) (any, error) {
 	}
 	if request.StreamID == "" {
 		return nil, pluginabi.NewError("invalid_request", "execute_stream requires stream_id", 400)
+	}
+	request.Payload, errDecode = streamingPayload(request.Payload)
+	if errDecode != nil {
+		return nil, errDecode
 	}
 	storage, errParse := parseZaiStorage(request.StorageJSON)
 	if errParse != nil {

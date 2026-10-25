@@ -55,7 +55,7 @@ func registration() map[string]any {
 			"Name":             "Z.AI",
 			"Version":          pluginVersion,
 			"Author":           "cri",
-			"GitHubRepository": "https://github.com/router-for-me/cpa-auth-zai",
+			"GitHubRepository": "https://github.com/cr1cr1/cpa-auth-zai",
 			"Logo":             "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
 			"ConfigFields": []map[string]any{{
 				"Name":        "history-timezone",

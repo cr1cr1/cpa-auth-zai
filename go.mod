@@ -1,4 +1,4 @@
-module github.com/router-for-me/cpa-auth-zai
+module github.com/cr1cr1/cpa-auth-zai
 
 go 1.27
 

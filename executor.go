@@ -308,6 +308,7 @@ func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTT
 	defer closeHTTPStream(stream.StreamID)
 	rpcStreamID := request.StreamID
 	pending := []byte{}
+	ssePending := []byte{}
 	for {
 		result, errCall := callHost(pluginabi.MethodHostHTTPStreamRead, hostStreamID{StreamID: stream.StreamID})
 		if errCall != nil {
@@ -344,6 +345,7 @@ func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTT
 			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, apiKey), apiKey)
 			return
 		}
+		ssePending = logMalformedSSE(request.HostCallbackID, apiKey, ssePending, payload, read.Done)
 		if len(payload) > 0 {
 			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: payload}); errEmit != nil {
 				closeRPCStream(rpcStreamID, sanitizeExecutorError(errEmit.Error(), apiKey))
@@ -355,6 +357,64 @@ func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTT
 			return
 		}
 	}
+}
+
+// logMalformedSSE reports invalid event data through CPA debug logs without
+// changing the stream. Pending bytes belong only to this diagnostic parser.
+func logMalformedSSE(callbackID, apiKey string, pending, payload []byte, done bool) []byte {
+	pending = append(pending, payload...)
+	pending = bytes.ReplaceAll(pending, []byte("\r\n"), []byte("\n"))
+	for {
+		end := bytes.Index(pending, []byte("\n\n"))
+		if end < 0 {
+			break
+		}
+		logMalformedSSEEvent(callbackID, apiKey, pending[:end])
+		pending = pending[end+2:]
+	}
+	if done && len(pending) > 0 {
+		logMalformedSSEEvent(callbackID, apiKey, pending)
+		return nil
+	}
+	return pending
+}
+
+func logMalformedSSEEvent(callbackID, apiKey string, event []byte) {
+	var eventName string
+	var dataLines []string
+	for _, line := range strings.Split(string(event), "\n") {
+		if line == "data" {
+			dataLines = append(dataLines, "")
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimPrefix(value, " ")
+		switch name {
+		case "event":
+			eventName = value
+		case "data":
+			dataLines = append(dataLines, value)
+		}
+	}
+	if len(dataLines) == 0 {
+		return
+	}
+	data := strings.Join(dataLines, "\n")
+	if data == "[DONE]" || json.Valid([]byte(data)) {
+		return
+	}
+	preview := sanitizeDetail(redactSecrets(data, []string{apiKey}))
+	if preview == "" {
+		preview = "<empty>"
+	}
+	fields := map[string]any{"data": preview}
+	if eventName != "" {
+		fields["event"] = sanitizeDetail(eventName)
+	}
+	hostLog(callbackID, "debug", "z.ai upstream SSE data is not valid JSON", fields)
 }
 
 // failRPCStream reports one stream error to the client, then closes the stream

@@ -683,6 +683,67 @@ func TestExecuteStreamRoutesNativeResponsesAndPreservesTerminal(t *testing.T) {
 	}
 }
 
+func TestDebugMalformedSSELogsSanitizedPreview(t *testing.T) {
+	frames := [][]byte{
+		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
+		[]byte("event: error\ndata: key-id.key-secret"),
+		[]byte(" rejected\n\n"),
+	}
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return map[string]any{"status_code": 200, "stream_id": "h-debug-sse"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": frames[index], "done": index == len(frames)-1}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true, "Format": "openai-response", "SourceFormat": "openai-response",
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","input":"hello","stream":true}`),
+		"stream_id":   "r-debug-sse", "host_callback_id": "cb-debug-sse",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	debugLogs := 0
+	var emitted [][]byte
+	for _, call := range log.all() {
+		switch call.Method {
+		case pluginabi.MethodHostStreamEmit:
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			emitted = append(emitted, emit.Payload)
+		case pluginabi.MethodHostLog:
+			var entry hostLogRequest
+			testDecode(t, call.Payload, &entry)
+			if entry.Message != "z.ai upstream SSE data is not valid JSON" {
+				continue
+			}
+			debugLogs++
+			if entry.Level != "debug" {
+				t.Fatalf("log level = %q, want debug", entry.Level)
+			}
+			preview := fmt.Sprint(entry.Fields["data"])
+			if strings.Contains(preview, "key-id.key-secret") || !strings.Contains(preview, "[redacted] rejected") {
+				t.Fatalf("debug preview = %q, want redacted malformed data", preview)
+			}
+		}
+	}
+	if debugLogs != 1 {
+		t.Fatalf("debug logs = %d, want one malformed event", debugLogs)
+	}
+	if len(emitted) != len(frames) {
+		t.Fatalf("emitted chunks = %d, want %d", len(emitted), len(frames))
+	}
+	for index := range frames {
+		if !bytes.Equal(emitted[index], frames[index]) {
+			t.Fatalf("chunk %d changed: %q", index, emitted[index])
+		}
+	}
+}
+
 // Acceptance: a rejection before the stream starts returns the upstream status,
 // emits nothing, and releases the host HTTP stream.
 func TestExecuteStreamUpstreamRejectsBeforeStream(t *testing.T) {

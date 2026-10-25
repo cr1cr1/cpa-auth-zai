@@ -21,7 +21,7 @@ Completed a real hosted sign-in against the disposable CPA container and verifie
 
 | Check | Result |
 |---|---|
-| Hosted sign-in → credential persisted (`zai-cristi-chiru-gmail-com.json`) | **pass** — ready in ~20 s / 4 polls |
+| Hosted sign-in → credential persisted (`zai-<account>.json`) | **pass** — ready in ~20 s / 4 polls |
 | Storage contents | `biz_access_token` (long-lived HS512), short-lived `oauth_access_token`, `zcode_jwt`, email, user id — no API key touched |
 | Monitor endpoints (`quota/limit`, `usage-detail`) authorize with… | **the business token**; the OAuth session token and zcode JWT are rejected with envelope `code: 401 "token expired or incorrect"` inside HTTP 200 |
 | Live quota through CPA | **pass** — 5-hour window 96% remaining (reset same-day 12:31 UTC), 7-day 98% (reset Oct 30); the envelope-401 candidate fallback proved necessary and works |

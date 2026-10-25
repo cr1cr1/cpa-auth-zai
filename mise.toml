@@ -6,8 +6,8 @@ golangci-lint = "2.15"
 
 [env]
 # Default caches are read-only on some container hosts.
-GOCACHE = "/tmp/cpa-auth-zai-gocache"
-GOMODCACHE = "/tmp/cpa-auth-zai-gomod"
+GOCACHE = "tmp/cpa-auth-zai-gocache"
+GOMODCACHE = "tmp/cpa-auth-zai-gomod"
 GOFLAGS = "-mod=vendor"
 
 [tasks.test]
@@ -27,8 +27,8 @@ rm -f dist/cpa-auth-zai.h
 """
 
 [tasks.install]
-description = "Copy the plugin .so into the CPA plugins directory (override with PLUGIN_DIR=...)"
-run = "install -m 0755 dist/cpa-auth-zai.so \"${PLUGIN_DIR:-/home/cri/.config/containers/cli-proxy-api/plugins/linux/amd64}/cpa-auth-zai-v0.1.0.so\""
+description = "Copy the plugin .so into the CPA plugins directory (set CPA_PLUGIN_DIR=...)"
+run = "set -euo pipefail; install -m 0755 dist/cpa-auth-zai.so \"${CPA_PLUGIN_DIR}/\""
 
 [tasks.clean]
 run = "rm -rf dist"

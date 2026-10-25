@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,13 +19,15 @@ const usageHistoryRoutePath = "/plugins/cpa-auth-zai/usage/history"
 // maxHistoryRange caps one history request at a leap year of source days.
 const maxHistoryRange = 366 * 24 * time.Hour
 
+//go:embed zai.svg
+var zaiLogo []byte
+
 func init() {
 	registerHandler(pluginabi.MethodManagementRegister, handleManagementRegister)
 	registerHandler(pluginabi.MethodManagementHandle, handleManagementHandle)
 }
 
-// handleManagementRegister declares the protected history route. Menu stays
-// empty so the route is never exposed as an unauthenticated /v0/resource.
+// handleManagementRegister declares protected history and the public embedded logo.
 func handleManagementRegister([]byte) (any, error) {
 	return map[string]any{
 		"routes": []map[string]any{{
@@ -32,6 +35,11 @@ func handleManagementRegister([]byte) (any, error) {
 			"Path":        usageHistoryRoutePath,
 			"Menu":        "",
 			"Description": "Z.ai token usage history (account-scoped)",
+		}},
+		"resources": []map[string]any{{
+			"Path":        "/zai.svg",
+			"Menu":        "",
+			"Description": "Z.AI logo",
 		}},
 	}, nil
 }
@@ -78,6 +86,13 @@ func handleManagementHandle(payload []byte) (any, error) {
 		if errUnmarshal := json.Unmarshal(payload, &request); errUnmarshal != nil {
 			return nil, fmt.Errorf("decode management request: %w", errUnmarshal)
 		}
+	}
+	if strings.EqualFold(request.Method, http.MethodGet) && strings.HasSuffix(request.Path, zaiLogoPath) {
+		return managementWireResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string][]string{"Content-Type": {"image/svg+xml"}},
+			Body:       zaiLogo,
+		}, nil
 	}
 	if !strings.EqualFold(request.Method, http.MethodGet) || !strings.HasSuffix(request.Path, usageHistoryRoutePath) {
 		return managementError(http.StatusNotFound, "not found"), nil

@@ -64,7 +64,7 @@ plugins:
 - `management_api`: `GET /v0/management/plugins/cpa-auth-zai/usage/history` returns token usage history with explicit timezone handling.
 - Streaming: executor requests always send `stream: true`, even when input omits `stream` or sets `false`. Non-streaming payloads stay unchanged.
 - ZCode fingerprint: inference-only headers for identity, platform, OS, timezone, session, and request tracing; pinned to ZCode 3.10.2. No installed-client inspection or device-identity file.
-- Branding: official z.ai SVG for plugin cards and the plugin-resource sidebar. General provider branding belongs to the management UI, not plugin API configuration.
+- Branding: embedded `zai.svg` served at `/v0/resource/plugins/cpa-auth-zai/zai.svg` for plugin cards and the plugin-resource sidebar. General provider branding belongs to the management UI, not plugin API configuration.
 
 ## Login
 

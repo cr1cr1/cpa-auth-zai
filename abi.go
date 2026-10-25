@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	pluginID   = "cpa-auth-zai"
-	providerID = "zai"
+	pluginID    = "cpa-auth-zai"
+	providerID  = "zai"
+	zaiLogoPath = "/v0/resource/plugins/cpa-auth-zai/zai.svg"
 )
 
 var pluginVersion = "0.1.0"
@@ -57,7 +58,7 @@ func registration() map[string]any {
 			"Version":          pluginVersion,
 			"Author":           "cri",
 			"GitHubRepository": "https://github.com/cr1cr1/cpa-auth-zai",
-			"Logo":             "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+			"Logo":             zaiLogoPath,
 			"ConfigFields": []map[string]any{{
 				"Name":        "history-timezone",
 				"Type":        pluginapi.ConfigFieldTypeString,

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -41,9 +43,8 @@ func mgmtResult(t *testing.T, raw []byte) (status int, body []byte) {
 	return response.StatusCode, response.Body
 }
 
-// Acceptance: registration exposes exactly one authenticated management
-// route — no unauthenticated resource route for account usage data.
-func TestManagementRegistersProtectedRouteOnly(t *testing.T) {
+// Acceptance: registration protects account usage and exposes only the public logo.
+func TestManagementRegistersHistoryAndLogo(t *testing.T) {
 	raw := callResult(t, pluginabi.MethodManagementRegister, []byte("{}"))
 	var registration struct {
 		Routes []struct {
@@ -75,8 +76,42 @@ func TestManagementRegistersProtectedRouteOnly(t *testing.T) {
 	if !strings.Contains(route.Description, "account-scoped") {
 		t.Fatalf("description = %q", route.Description)
 	}
-	if len(registration.Resources) != 0 {
-		t.Fatalf("usage data must never be a public resource: %v", registration.Resources)
+	if len(registration.Resources) != 1 || registration.Resources[0]["Path"] != "/zai.svg" {
+		t.Fatalf("public resources = %v, want only /zai.svg", registration.Resources)
+	}
+	if registration.Resources[0]["Menu"] != "" {
+		t.Fatalf("logo must not add a resource menu entry: %v", registration.Resources[0])
+	}
+}
+
+func TestServesEmbeddedLogo(t *testing.T) {
+	payload, errMarshal := json.Marshal(map[string]any{
+		"Method": "GET",
+		"Path":   "/v0/resource/plugins/cpa-auth-zai/zai.svg",
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal logo request: %v", errMarshal)
+	}
+	result, errHandle := handleManagementHandle(payload)
+	if errHandle != nil {
+		t.Fatalf("serve logo: %v", errHandle)
+	}
+	response, ok := result.(managementWireResponse)
+	if !ok {
+		t.Fatalf("logo response type = %T", result)
+	}
+	if response.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200: %s", response.StatusCode, response.Body)
+	}
+	if got := response.Headers["Content-Type"]; len(got) != 1 || got[0] != "image/svg+xml" {
+		t.Fatalf("Content-Type = %v, want image/svg+xml", got)
+	}
+	want, errRead := os.ReadFile("zai.svg")
+	if errRead != nil {
+		t.Fatalf("read source logo: %v", errRead)
+	}
+	if !bytes.Equal(response.Body, want) {
+		t.Fatalf("served logo differs from embedded zai.svg")
 	}
 }
 

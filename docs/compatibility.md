@@ -62,7 +62,7 @@ Result: no API-key fallback was added. Quota and usage management (goal 2) were 
 - Business login `POST /api/auth/z/login {"token"}` mints long-lived biz JWT: Verified (live) 2026-10-24 gated run. Monitor endpoints require the business token; envelope-aware bearer fallback handles rejected candidates.
 - `quota/limit` response shape (unit/number window rows, percentage, nextResetTime): Reported by [OpenUsage](https://openusage.sh/docs/providers/zai/). If wrong, quota buckets stay absent (unknown) and summary stays empty.
 - Coding Plan catalog `GET /api/coding/paas/v4/models` returns `data[].id`; OAuth-derived business token is accepted: Reported by third-party implementations; authentication unverified. If wrong, model discovery returns an error; no fixed-model or general-catalog fallback exists.
-- Official z.ai SVG at `https://z-cdn.chatglm.cn/z-ai/static/logo.svg`: Verified (public asset) 2026-10-25. Plugin cards and resource sidebar show the generic icon if the browser cannot load it.
+- Official z.ai SVG from `https://z-cdn.chatglm.cn/z-ai/static/logo.svg`: Verified (public asset) 2026-10-25. Downloaded as `zai.svg`, embedded in the plugin, and served at `/v0/resource/plugins/cpa-auth-zai/zai.svg`; registration and exact response bytes are unit-tested. No remote asset request is needed at runtime.
 - Coding Plan usage is restricted to z.ai-approved tools: Verified (z.ai FAQ, 2026-10). The operator accepts this provider-policy risk when deploying CPA with the plugin.
 
 ## Deliberate exclusions

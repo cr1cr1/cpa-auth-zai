@@ -28,7 +28,7 @@ z.ai officially supports native OpenAI Responses at `https://api.z.ai/api/v1/res
 - A mixed-format test proved that CPA can select different input and output formats when both are declared and then skip translation. The plugin rejects that mismatch with `invalid_request`/400 instead of emitting the wrong protocol. Same-format aliases remain valid.
 - Native streaming preserves `response.output_item.done` followed by `response.completed` byte-for-byte and closes the upstream HTTP stream. No completion event is synthesized.
 - `mise run test` passed with the race detector, `mise run lint` reported `0 issues`, `mise run build` produced `dist/cpa-auth-zai.so`, and `git diff --check` passed.
-- A later minimal live Responses tool request still ended after `response.output_item.done` for reasoning, followed by CPA's `upstream stream closed before a terminal event` error. Native routing did not resolve the terminal failure; no completion was synthesized. Anthropic Messages support is tracked in [issue 0015](0015-native-anthropic-messages.md).
+- An earlier failed minimal Responses request used a stale plugin binary. After installing the native-routing build, the same forced tool call completed with a finished `get_weather` call, usage totals, and `response.completed`. This path is live-verified; no completion is synthesized. Anthropic Messages support is tracked in [issue 0015](0015-native-anthropic-messages.md).
 
 ## Evidence boundary
 

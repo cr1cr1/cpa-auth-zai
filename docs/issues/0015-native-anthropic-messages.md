@@ -19,7 +19,7 @@ A harness can select Anthropic Messages when calling CPA models. The plugin curr
 - Send `anthropic-version: 2023-06-01` with non-streaming and streaming requests.
 - Preserve native Anthropic events, including `message_stop`, without synthesizing terminal events.
 - Keep existing API-key authentication, optional ZCode header, mixed-format rejection, redaction, and stream cleanup.
-- Record the separate live OpenAI Responses terminal failure without claiming it is fixed.
+- Record the final native OpenAI Responses live-verification result accurately.
 
 ## Verification
 
@@ -29,7 +29,7 @@ A harness can select Anthropic Messages when calling CPA models. The plugin curr
 - Format-only regression tests exposed an empty `SourceFormat` being normalized before the legacy fallback. Both Responses and Anthropic now route correctly with only `Format`; unsupported-format fixtures use `gemini`.
 - The full suite verifies existing Chat Completions and OpenAI Responses behavior, API-key authentication, mixed-format rejection, redaction, and stream cleanup.
 - `mise run test` passed with the race detector, `mise run lint` reported `0 issues`, `mise run build` produced `dist/cpa-auth-zai.so`, and `git diff --check` passed.
-- Live Anthropic Messages completion remains unverified. The separate minimal native Responses terminal failure is recorded in [issue 0014](0014-native-openai-responses.md).
+- Live Anthropic Messages completion remains unverified. Native OpenAI Responses success is recorded in [issue 0014](0014-native-openai-responses.md).
 
 ## Evidence boundary
 

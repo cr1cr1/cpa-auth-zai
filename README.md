@@ -23,11 +23,11 @@ The tag workflow uses GoReleaser and Zig to build the c-shared plugin for Linux,
 
 ## Install
 
-Set `CPA_PLUGIN_DIR` to CPA's platform-specific plugin directory. `mise run install` selects the current OS/architecture GoReleaser artifact and installs it with CPA's ID-version naming rule:
+Set `CPA_PLUGIN_DIR` to CPA's platform-specific plugin directory. `mise run install` selects the current OS/architecture GoReleaser artifact and copies it as `cpa-auth-zai.<ext>`:
 
 ```
 CPA_PLUGIN_DIR=plugins/linux/amd64 mise run install
-# Installs plugins/linux/amd64/cpa-auth-zai-v<version>.so
+# Installs plugins/linux/amd64/cpa-auth-zai.so
 ```
 
 Enable it in `config.yaml`:

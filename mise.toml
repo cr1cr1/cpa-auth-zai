@@ -44,9 +44,7 @@ if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
   echo "expected one $os/$arch plugin in dist; run mise run build" >&2
   exit 1
 fi
-name="$(basename "$1")"
-dest="${name%-${os}-${arch}.${ext}}.${ext}"
-install -m 0755 "$1" "${CPA_PLUGIN_DIR}/${dest}"
+cp "$1" "${CPA_PLUGIN_DIR}/cpa-auth-zai.${ext}"
 """
 
 [tasks.clean]

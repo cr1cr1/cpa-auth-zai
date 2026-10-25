@@ -186,6 +186,95 @@ func TestExecuteForwardsPayloadVerbatim(t *testing.T) {
 	}
 }
 
+func TestExecuteRoutesNativeOpenAIResponses(t *testing.T) {
+	payload := []byte(`{"model":"glm-5.3","input":"hello","stream":false}`)
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		var upstream hostHTTPRequest
+		testDecode(t, call.Payload, &upstream)
+		if upstream.Request.URL != "https://api.z.ai/api/v1/responses" {
+			t.Errorf("upstream URL = %q, want native Responses endpoint", upstream.Request.URL)
+		}
+		if !bytes.Equal(upstream.Request.Body, payload) {
+			t.Errorf("payload changed: %s", upstream.Request.Body)
+		}
+		return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"resp-1","object":"response","status":"completed","output":[]}`)}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Format": "openai-response", "SourceFormat": "openai-response",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":          payload,
+		"host_callback_id": "cb-responses",
+	})
+	result := testCallOK(t, pluginabi.MethodExecutorExecute, request)
+	var response struct {
+		Payload []byte `json:"Payload"`
+	}
+	testDecode(t, result, &response)
+	if !bytes.Equal(response.Payload, []byte(`{"id":"resp-1","object":"response","status":"completed","output":[]}`)) {
+		t.Fatalf("response payload = %s", response.Payload)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1", got)
+	}
+}
+
+func TestExecuteRejectsMixedPayloadAndOutputFormats(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return map[string]any{"StatusCode": 200, "Body": []byte(`{"id":"chat-1"}`)}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Format": "openai-response", "SourceFormat": "openai",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":          []byte(`{"model":"glm-5.3","messages":[]}`),
+		"host_callback_id": "cb-mixed-formats",
+	})
+	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
+	if perr.Code != "invalid_request" || perr.HTTPStatus != 400 {
+		t.Fatalf("error = %+v, want invalid_request/400 for mixed formats", perr)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
+func TestExecuteRejectsUnsupportedFormat(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return map[string]any{"StatusCode": 200, "Body": []byte(`{}`)}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Format": "claude",
+		"StorageJSON":      []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":          []byte(`{"model":"glm-5.3"}`),
+		"host_callback_id": "cb-unsupported",
+	})
+	perr := testCallErr(t, pluginabi.MethodExecutorExecute, request)
+	if perr.HTTPStatus != 400 || !strings.Contains(perr.Message, "unsupported") {
+		t.Fatalf("error = %+v, want unsupported format", perr)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDo); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
+func TestExecuteStreamRejectsUnsupportedFormat(t *testing.T) {
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true, "Format": "claude",
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","stream":true}`),
+		"stream_id":   "r-unsupported", "host_callback_id": "cb-unsupported-stream",
+	})
+	perr := testCallErr(t, pluginabi.MethodExecutorExecuteStream, request)
+	if perr.Code != "invalid_request" || perr.HTTPStatus != 400 {
+		t.Fatalf("error = %+v, want invalid_request/400", perr)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPDoStream); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
 func TestCodingRequestHeadersOmitsBlankZcodeToken(t *testing.T) {
 	for _, token := range []string{"", " \n"} {
 		headers := codingRequestHeaders("tok-oauth", token)
@@ -357,6 +446,53 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	}
 	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
 		t.Fatalf("HTTP stream closes = %d, want 1 on normal completion", got)
+	}
+}
+
+func TestExecuteStreamRoutesNativeResponsesAndPreservesTerminal(t *testing.T) {
+	payload := []byte(`{"model":"glm-5.3","input":"hello","stream":true}`)
+	frames := [][]byte{
+		[]byte("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n\n"),
+		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"),
+	}
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			var upstream hostHTTPRequest
+			testDecode(t, call.Payload, &upstream)
+			if upstream.Request.URL != "https://api.z.ai/api/v1/responses" || !bytes.Equal(upstream.Request.Body, payload) {
+				t.Errorf("upstream request = %s %s", upstream.Request.URL, upstream.Request.Body)
+			}
+			return map[string]any{"status_code": 200, "stream_id": "h-native-responses"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": frames[index], "done": index == len(frames)-1}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true, "Format": "openai-response", "SourceFormat": "openai-response",
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":     payload,
+		"stream_id":   "r-native-responses", "host_callback_id": "cb-native-responses",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+	var emitted [][]byte
+	for _, call := range log.all() {
+		if call.Method == pluginabi.MethodHostStreamEmit {
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			if emit.Error != "" {
+				t.Fatalf("stream emit error = %q", emit.Error)
+			}
+			emitted = append(emitted, emit.Payload)
+		}
+	}
+	if len(emitted) != 2 || !bytes.Equal(emitted[0], frames[0]) || !bytes.Equal(emitted[1], frames[1]) {
+		t.Fatalf("emitted frames = %q, want unchanged native terminal sequence", emitted)
+	}
+	if got := log.count(pluginabi.MethodHostHTTPStreamClose); got != 1 {
+		t.Fatalf("HTTP stream closes = %d, want 1", got)
 	}
 }
 

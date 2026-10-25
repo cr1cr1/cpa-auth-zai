@@ -30,7 +30,7 @@ Live inference rejects every login-derived token. The known ZCode client resolve
 - A deterministic concurrent test produced two create calls before provisioning was serialized and one afterward.
 - Review regression tests failed for unredacted host errors, create-response key material, stream read/emit errors, and missing HTTP stream cleanup before those paths were fixed.
 - `mise run test` passed with the race detector, `mise run lint` reported `0 issues`, `mise run build` produced `dist/cpa-auth-zai.so`, and `git diff --check` passed.
-- Live key provisioning, key classification, billing behavior, and inference remain unverified until the operator signs in again and tests the account.
+- Live login created `cpa-auth-zai`, and a subsequent Responses request reached model output. Its translated stream ended without `response.completed`; [issue 0014](0014-native-openai-responses.md) addresses that protocol boundary. Key classification and billing behavior were not independently checked.
 
 ## Evidence boundary
 

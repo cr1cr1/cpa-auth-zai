@@ -1,6 +1,6 @@
 # cpa-auth-zai
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, chat-completions execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, Chat Completions and OpenAI Responses execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
 
 ## Build
 
@@ -42,7 +42,7 @@ plugins:
 |---|---|
 | `auth_provider` | Remote-friendly sign-in via z.ai's hosted polling flow; credentials stored by CPA; renewal = sign in again. |
 | `model_provider` | Live Coding Plan catalog from `api.z.ai/api/coding/paas/v4/models`, using the business token derived from OAuth login. No fixed-model fallback. |
-| `executor` | Chat-completions execution through `api.z.ai/api/coding/paas/v4/chat/completions`, using the provisioned project API key as bearer and the optional separate `X-Zcode-Token` header. No login-token fallback. Live API-key inference remains unverified. |
+| `executor` | Uses the provisioned project API key and optional `X-Zcode-Token`. Chat Completions uses `api.z.ai/api/coding/paas/v4/chat/completions`; native OpenAI Responses uses `api.z.ai/api/v1/responses`. CPA payload-format metadata selects the endpoint, with no client-specific routing or login-token fallback. Live API-key inference reached model output; native Responses completion remains unverified. |
 | `quota_provider` | Rolling 5-hour / 7-day windows from `api.z.ai/api/monitor/usage/quota/limit`; missing values stay unknown. Resets are provider-managed (unsupported). |
 | `management_api` | `GET /v0/management/plugins/cpa-auth-zai/usage/history` — token usage history with explicit timezone handling. |
 

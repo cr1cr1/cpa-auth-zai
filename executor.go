@@ -121,6 +121,37 @@ func sanitizeExecutorError(message, apiKey string) string {
 	return sanitizeDetail(redactSecrets(message, []string{apiKey}))
 }
 
+func executorUpstreamURL(request *executorRequest) (string, error) {
+	sourceFormat := normalizeExecutorFormat(request.SourceFormat)
+	outputFormat := normalizeExecutorFormat(request.Format)
+	if sourceFormat != "" && outputFormat != "" && sourceFormat != outputFormat {
+		return "", pluginabi.NewError("invalid_request", fmt.Sprintf("unsupported mixed z.ai formats %q to %q", request.SourceFormat, request.Format), http.StatusBadRequest)
+	}
+	format := sourceFormat
+	if format == "" {
+		format = outputFormat
+	}
+	switch format {
+	case "", "openai":
+		return codingChatCompletionsURL, nil
+	case "openai-response":
+		return codingResponsesURL, nil
+	default:
+		return "", pluginabi.NewError("invalid_request", fmt.Sprintf("unsupported z.ai executor format %q", format), http.StatusBadRequest)
+	}
+}
+
+func normalizeExecutorFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "openai", "chat-completions", "openai-chat-completions":
+		return "openai"
+	case "openai-response", "openai-responses", "responses":
+		return "openai-response"
+	default:
+		return strings.ToLower(strings.TrimSpace(format))
+	}
+}
+
 // handleExecute forwards the host-translated payload with the provisioned API
 // key. Payload rules were already applied by the host; this is the final barrier.
 func handleExecute(payload []byte) (any, error) {
@@ -139,7 +170,11 @@ func handleExecute(payload []byte) (any, error) {
 	if errKey != nil {
 		return nil, errKey
 	}
-	response, errCall := hostDo(request.HostCallbackID, "POST", codingChatCompletionsURL, codingRequestHeaders(apiKey, storage.ZcodeJWT), request.Payload)
+	upstreamURL, errURL := executorUpstreamURL(request)
+	if errURL != nil {
+		return nil, errURL
+	}
+	response, errCall := hostDo(request.HostCallbackID, "POST", upstreamURL, codingRequestHeaders(apiKey, storage.ZcodeJWT), request.Payload)
 	if errCall != nil {
 		return nil, fmt.Errorf("z.ai inference request failed: %s", sanitizeExecutorError(errCall.Error(), apiKey))
 	}
@@ -176,6 +211,9 @@ func handleExecuteStream(payload []byte) (any, error) {
 	if errKey != nil {
 		return nil, errKey
 	}
+	if _, errURL := executorUpstreamURL(request); errURL != nil {
+		return nil, errURL
+	}
 	stream, errOpen := openUpstreamStream(request, apiKey, storage.ZcodeJWT)
 	if errOpen != nil {
 		return nil, fmt.Errorf("z.ai inference stream failed: %s", sanitizeExecutorError(errOpen.Error(), apiKey))
@@ -190,11 +228,15 @@ func handleExecuteStream(payload []byte) (any, error) {
 }
 
 func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*hostHTTPStreamStart, error) {
+	upstreamURL, errURL := executorUpstreamURL(request)
+	if errURL != nil {
+		return nil, errURL
+	}
 	result, errCall := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
 		HostCallbackID: request.HostCallbackID,
 		Request: hostHTTPRequestSpec{
 			Method:  "POST",
-			URL:     codingChatCompletionsURL,
+			URL:     upstreamURL,
 			Headers: codingRequestHeaders(candidate, zcodeJWT),
 			Body:    request.Payload,
 		},

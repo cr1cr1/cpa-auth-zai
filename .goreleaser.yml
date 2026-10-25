@@ -49,7 +49,7 @@ builds:
       - -w
       - -X main.pluginVersion={{ .Version }}
 checksum:
-  name_template: "sha256sums.txt"
+  name_template: "checksums.txt"
   algorithm: sha256
 snapshot:
   version_template: "{{ .Version }}-next"

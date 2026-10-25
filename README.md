@@ -69,3 +69,9 @@ OAuth and quota/usage success and failure events go through CPA's `host.log` RPC
 ## Status and evidence tiers
 
 See [docs/compatibility.md](docs/compatibility.md) for the verified/unverified contract table before relying on any single behavior.
+
+---
+
+## License
+
+[MIT License](LICENSE)

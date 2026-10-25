@@ -2,6 +2,12 @@
 
 A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that adds z.ai (GLM Coding Plan) browser sign-in, account models, Chat Completions, OpenAI Responses, and Anthropic Messages execution, and quota/usage history. Login provisions a named project API key for inference; login-derived tokens remain separate for account APIs.
 
+## Screenshots
+
+![OAuth login flow in the CPA management UI](screenshots/oauth-login.png)
+
+![Quota and usage history in the CPA management UI](screenshots/quota.png)
+
 ## Build
 
 [mise](https://mise.jdx.dev) provides Go and golangci-lint and runs the tasks (`mise run` lists them). All Go dependencies are vendored, including the public CPA v8.0.40 SDK packages. No CPA checkout or Go module download is needed; tasks use `-mod=vendor`.

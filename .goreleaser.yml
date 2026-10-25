@@ -2,11 +2,10 @@ version: 2
 project_name: cpa-auth-zai
 archives:
   - strip_binary_directory: true
-    format_overrides:
-      - formats: zip
+    formats: zip
     files:
       - README.md
-    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 builds:
   - id: plugin
     binary: cpa-auth-zai-v{{ .Version }}-{{ .Os }}-{{ .Arch }}

@@ -4,11 +4,12 @@
 go = "1.27"
 golangci-lint = "2.15"
 goreleaser = "2.19"
+zig = "0.17.0"
 
 [env]
 # Default caches are read-only on some container hosts.
-GOCACHE = "tmp/cpa-auth-zai-gocache"
-GOMODCACHE = "tmp/cpa-auth-zai-gomod"
+GOCACHE = "${MISE_PROJECT_ROOT:-/}tmp/cpa-auth-zai-gocache"
+GOMODCACHE = "${MISE_PROJECT_ROOT:-/}tmp/cpa-auth-zai-gomod"
 GOFLAGS = "-mod=vendor"
 
 [tasks.test]

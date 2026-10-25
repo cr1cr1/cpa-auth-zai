@@ -300,15 +300,15 @@ func openUpstreamStream(request *executorRequest, candidate, zcodeJWT string) (*
 	return &start, nil
 }
 
-// pumpUpstreamStream relays raw upstream SSE bytes from the host HTTP stream
-// (httpStreamID) to the plugin RPC stream (rpcStreamID). The two ids belong to
-// different bridges and must not be swapped. Chunks are forwarded unmodified.
+// pumpUpstreamStream relays complete, valid upstream SSE events from the host
+// HTTP stream to the plugin RPC stream. The two stream IDs belong to different
+// bridges and must not be swapped. Valid event bytes stay unchanged.
 func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTTPStreamStart) {
 	defer streamPumps.Done()
 	defer closeHTTPStream(stream.StreamID)
 	rpcStreamID := request.StreamID
 	pending := []byte{}
-	ssePending := []byte{}
+	relay := sseRelay{}
 	for {
 		result, errCall := callHost(pluginabi.MethodHostHTTPStreamRead, hostStreamID{StreamID: stream.StreamID})
 		if errCall != nil {
@@ -345,44 +345,88 @@ func pumpUpstreamStream(request *executorRequest, apiKey string, stream *hostHTT
 			failRPCStream(rpcStreamID, upstreamErrorDetail(payload, apiKey), apiKey)
 			return
 		}
-		ssePending = logMalformedSSE(request.HostCallbackID, apiKey, ssePending, payload, read.Done)
-		if len(payload) > 0 {
-			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: payload}); errEmit != nil {
+		for _, event := range relay.push(request.HostCallbackID, apiKey, payload, read.Done) {
+			if _, errEmit := callHost(pluginabi.MethodHostStreamEmit, rpcStreamEmit{StreamID: rpcStreamID, Payload: event}); errEmit != nil {
 				closeRPCStream(rpcStreamID, sanitizeExecutorError(errEmit.Error(), apiKey))
 				return
 			}
 		}
 		if read.Done {
+			if relay.malformed && !relay.terminal {
+				failRPCStream(rpcStreamID, "z.ai upstream stream ended with malformed SSE data", apiKey)
+				return
+			}
 			closeRPCStream(rpcStreamID, "")
 			return
 		}
 	}
 }
 
-// logMalformedSSE reports invalid event data through CPA debug logs without
-// changing the stream. Pending bytes belong only to this diagnostic parser.
-func logMalformedSSE(callbackID, apiKey string, pending, payload []byte, done bool) []byte {
-	pending = append(pending, payload...)
-	pending = bytes.ReplaceAll(pending, []byte("\r\n"), []byte("\n"))
+type sseRelay struct {
+	pending   []byte
+	malformed bool
+	terminal  bool
+}
+
+func (r *sseRelay) push(callbackID, apiKey string, payload []byte, done bool) [][]byte {
+	r.pending = append(r.pending, payload...)
+	var events [][]byte
 	for {
-		end := bytes.Index(pending, []byte("\n\n"))
+		end, separator := sseEventEnd(r.pending)
 		if end < 0 {
 			break
 		}
-		logMalformedSSEEvent(callbackID, apiKey, pending[:end])
-		pending = pending[end+2:]
+		event := r.pending[:end+separator]
+		r.pending = r.pending[end+separator:]
+		events = r.offer(events, event, callbackID, apiKey)
 	}
-	if done && len(pending) > 0 {
-		logMalformedSSEEvent(callbackID, apiKey, pending)
-		return nil
+	if done && len(r.pending) > 0 {
+		events = r.offer(events, r.pending, callbackID, apiKey)
+		r.pending = nil
 	}
-	return pending
+	return events
 }
 
-func logMalformedSSEEvent(callbackID, apiKey string, event []byte) {
+func (r *sseRelay) offer(events [][]byte, event []byte, callbackID, apiKey string) [][]byte {
+	eventName, data, hasData, errDecode := parseSSEEvent(event)
+	if !hasData {
+		return append(events, event)
+	}
+	if errDecode == nil {
+		if terminalSSE(eventName, data) {
+			r.terminal = true
+		}
+		return append(events, event)
+	}
+	r.malformed = true
+	logMalformedSSEEvent(callbackID, apiKey, event)
+	return events
+}
+
+func sseEventEnd(data []byte) (int, int) {
+	end, separator := -1, 0
+	for _, candidate := range []struct {
+		mark []byte
+		size int
+	}{
+		{[]byte("\n\n"), 2},
+		{[]byte("\r\n\r\n"), 4},
+		{[]byte("\n\r\n"), 3},
+		{[]byte("\r\n\n"), 3},
+	} {
+		index := bytes.Index(data, candidate.mark)
+		if index >= 0 && (end < 0 || index < end) {
+			end, separator = index, candidate.size
+		}
+	}
+	return end, separator
+}
+
+func parseSSEEvent(event []byte) (string, string, bool, error) {
 	var eventName string
 	var dataLines []string
 	for _, line := range strings.Split(string(event), "\n") {
+		line = strings.TrimSuffix(line, "\r")
 		if line == "data" {
 			dataLines = append(dataLines, "")
 			continue
@@ -400,15 +444,38 @@ func logMalformedSSEEvent(callbackID, apiKey string, event []byte) {
 		}
 	}
 	if len(dataLines) == 0 {
-		return
+		return "", "", false, nil
 	}
 	data := strings.Join(dataLines, "\n")
 	if data == "[DONE]" {
-		return
+		return eventName, data, true, nil
 	}
 	var decoded any
 	errDecode := json.Unmarshal([]byte(data), &decoded)
-	if errDecode == nil {
+	return eventName, data, true, errDecode
+}
+
+func terminalSSE(eventName, data string) bool {
+	if data == "[DONE]" {
+		return true
+	}
+	if eventName == "" {
+		var payload struct{ Type string }
+		if errUnmarshal := json.Unmarshal([]byte(data), &payload); errUnmarshal == nil {
+			eventName = payload.Type
+		}
+	}
+	switch eventName {
+	case "response.completed", "response.failed", "response.incomplete", "message_stop", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func logMalformedSSEEvent(callbackID, apiKey string, event []byte) {
+	eventName, data, hasData, errDecode := parseSSEEvent(event)
+	if !hasData || errDecode == nil {
 		return
 	}
 	redacted := redactSecrets(data, []string{apiKey})

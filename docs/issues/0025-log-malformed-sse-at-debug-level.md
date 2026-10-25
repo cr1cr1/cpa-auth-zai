@@ -23,3 +23,5 @@ issue_status: done
 - `go test -race ./...` passed and `golangci-lint run` reported `0 issues`.
 - The current-platform GoReleaser snapshot build passed.
 - `git diff --check` passed.
+
+Update 2026-10-25: [issue 0026](0026-reject-malformed-sse-events.md) changes forwarding to complete valid events. Malformed events are dropped instead of forwarded.

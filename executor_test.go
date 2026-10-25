@@ -422,8 +422,8 @@ func TestExecuteUpstreamErrorDetailSanitized(t *testing.T) {
 	}
 }
 
-// Acceptance: the stream response is async (headers only, no chunks), upstream
-// SSE bytes are emitted on the RPC stream id in order, and the stream closes
+// Acceptance: the stream response is async (headers only, no chunks), valid
+// SSE events are emitted on the RPC stream id in order, and the stream closes
 // cleanly. The HTTP stream id and the RPC stream id stay separate.
 func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
@@ -442,9 +442,9 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 		case pluginabi.MethodHostHTTPStreamRead:
 			switch index {
 			case 0:
-				return map[string]any{"payload": []byte("a"), "done": false}, nil
+				return map[string]any{"payload": []byte("data: {\"n\":1}\n\n"), "done": false}, nil
 			case 1:
-				return map[string]any{"payload": []byte("b"), "done": false}, nil
+				return map[string]any{"payload": []byte("data: {\"n\":2}\n\n"), "done": false}, nil
 			default:
 				return map[string]any{"done": true}, nil
 			}
@@ -504,8 +504,8 @@ func TestExecuteStreamEmitsAndCloses(t *testing.T) {
 		}
 	}
 	want := []recordedEmit{
-		{StreamID: "r1", Payload: []byte("a")},
-		{StreamID: "r1", Payload: []byte("b")},
+		{StreamID: "r1", Payload: []byte("data: {\"n\":1}\n\n")},
+		{StreamID: "r1", Payload: []byte("data: {\"n\":2}\n\n")},
 	}
 	if len(emits) != len(want) {
 		t.Fatalf("emits = %d, want %d", len(emits), len(want))
@@ -687,9 +687,10 @@ func TestDebugMalformedSSELogsSanitizedPreview(t *testing.T) {
 	malformed := `{"response":{"output":[{"arguments":"key-id.key-secret ` + strings.Repeat("x", 350) + "TAIL"
 	splitAt := len(malformed) / 2
 	frames := [][]byte{
-		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
+		[]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"),
 		[]byte("event: error\ndata: " + malformed[:splitAt]),
 		[]byte(malformed[splitAt:] + "\n\n"),
+		[]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"),
 	}
 	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
 		switch call.Method {
@@ -745,14 +746,61 @@ func TestDebugMalformedSSELogsSanitizedPreview(t *testing.T) {
 	if debugLogs != 1 {
 		t.Fatalf("debug logs = %d, want one malformed event", debugLogs)
 	}
-	if len(emitted) != len(frames) {
-		t.Fatalf("emitted chunks = %d, want %d", len(emitted), len(frames))
+	if len(emitted) != 2 || !bytes.Equal(emitted[0], frames[0]) || !bytes.Equal(emitted[1], frames[3]) {
+		t.Fatalf("emitted events = %q, want valid events 0 and 3 unchanged", emitted)
 	}
-	for index := range frames {
-		if !bytes.Equal(emitted[index], frames[index]) {
-			t.Fatalf("chunk %d changed: %q", index, emitted[index])
+	for _, call := range log.all() {
+		if call.Method != pluginabi.MethodHostStreamClose {
+			continue
+		}
+		var closeEvent rpcStreamClose
+		testDecode(t, call.Payload, &closeEvent)
+		if closeEvent.Error != "" {
+			t.Fatalf("stream close error = %q, want clean completion after valid terminal", closeEvent.Error)
 		}
 	}
+}
+
+func TestMalformedSSEWithoutTerminalFailsExplicitly(t *testing.T) {
+	frame := []byte("event: response.completed\ndata: {\"response\":{\"output\":[{\"text\":\"cut off\")\n\n")
+	log := testWithFakeHost(t, func(call hostCall, index int) (any, error) {
+		switch call.Method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return map[string]any{"status_code": 200, "stream_id": "h-malformed-terminal"}, nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			return map[string]any{"payload": frame, "done": true}, nil
+		}
+		return map[string]any{}, nil
+	})
+	request := testJSON(t, map[string]any{
+		"AuthProvider": "zai", "Stream": true, "Format": "openai-response", "SourceFormat": "openai-response",
+		"StorageJSON": []byte(`{"version":1,"type":"zai","oauth_access_token":"tok-1","api_key":"key-id.key-secret"}`),
+		"Payload":     []byte(`{"model":"glm-5.3","input":"hello","stream":true}`),
+		"stream_id":   "r-malformed-terminal", "host_callback_id": "cb-malformed-terminal",
+	})
+	testCallOK(t, pluginabi.MethodExecutorExecuteStream, request)
+	streamPumps.Wait()
+
+	for _, call := range log.all() {
+		if call.Method == pluginabi.MethodHostStreamEmit {
+			var emit rpcStreamEmit
+			testDecode(t, call.Payload, &emit)
+			if emit.Error != "" && strings.Contains(emit.Error, "malformed SSE") {
+				return
+			}
+			if len(emit.Payload) > 0 {
+				t.Fatalf("malformed event reached client: %q", emit.Payload)
+			}
+		}
+		if call.Method == pluginabi.MethodHostStreamClose {
+			var closeEvent rpcStreamClose
+			testDecode(t, call.Payload, &closeEvent)
+			if strings.Contains(closeEvent.Error, "malformed SSE") {
+				return
+			}
+		}
+	}
+	t.Fatalf("stream did not fail with an explicit malformed SSE error")
 }
 
 // Acceptance: a rejection before the stream starts returns the upstream status,
@@ -988,7 +1036,7 @@ func TestExecuteStreamEmitFailureCloses(t *testing.T) {
 		case pluginabi.MethodHostHTTPDoStream:
 			return map[string]any{"status_code": 200, "stream_id": "h-e"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
-			return map[string]any{"payload": []byte("data"), "done": false}, nil
+			return map[string]any{"payload": []byte("data: {\"ok\":true}\n\n"), "done": false}, nil
 		case pluginabi.MethodHostStreamEmit:
 			return nil, fmt.Errorf("emit channel closed for key-id.key-secret")
 		}
@@ -1235,7 +1283,7 @@ func TestExecuteStreamDoesNotFallBackAfterOutput(t *testing.T) {
 			return map[string]any{"status_code": 200, "stream_id": "h-started"}, nil
 		case pluginabi.MethodHostHTTPStreamRead:
 			if index == 0 {
-				return map[string]any{"payload": []byte("data: started\n\n"), "done": false}, nil
+				return map[string]any{"payload": []byte("data: {\"status\":\"started\"}\n\n"), "done": false}, nil
 			}
 			return map[string]any{"payload": []byte(`{"code":401,"msg":"token expired","success":false}`), "done": true}, nil
 		}
@@ -1269,7 +1317,7 @@ func TestExecuteStreamDoesNotFallBackAfterOutput(t *testing.T) {
 			closeError = closeRequest.Error
 		}
 	}
-	if len(emittedData) != 1 || !bytes.Equal(emittedData[0], []byte("data: started\n\n")) {
+	if len(emittedData) != 1 || !bytes.Equal(emittedData[0], []byte("data: {\"status\":\"started\"}\n\n")) {
 		t.Fatalf("emitted data = %q, want only initial SSE bytes", emittedData)
 	}
 	if closeError != "token expired" {

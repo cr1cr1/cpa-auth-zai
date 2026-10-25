@@ -62,7 +62,7 @@ plugins:
   - Native Responses: live-verified completed tool call and `response.completed`. Anthropic Messages: live-unverified.
 - `quota_provider`: rolling 5-hour/7-day windows from `api.z.ai/api/monitor/usage/quota/limit`. Missing values stay unknown; provider-managed resets are unsupported.
 - `management_api`: `GET /v0/management/plugins/cpa-auth-zai/usage/history` returns token usage history with explicit timezone handling.
-- Streaming: executor requests always send `stream: true`, even when input omits `stream` or sets `false`. Non-streaming payloads stay unchanged.
+- Streaming: executor requests always send `stream: true`, even when input omits `stream` or sets `false`. Non-streaming payloads stay unchanged. Valid SSE events keep their exact bytes; malformed events are dropped, with an explicit error if no valid terminal remains.
 - ZCode fingerprint: inference-only headers for identity, platform, OS, timezone, session, and request tracing; pinned to ZCode 3.10.2. No installed-client inspection or device-identity file.
 - Branding: embedded `zai.svg` served at `/v0/resource/plugins/cpa-auth-zai/zai.svg` for plugin cards and the plugin-resource sidebar. General provider branding belongs to the management UI, not plugin API configuration.
 
@@ -89,7 +89,7 @@ The key-management API has third-party evidence, not a published z.ai integratio
 
 - OAuth and quota/usage success and failure events use CPA's `host.log` RPC.
 - Pending OAuth polls stay quiet. Upstream errors redact credentials.
-- Malformed upstream SSE events use CPA debug logs with sanitized previews, tails, lengths, and parse errors; stream chunks stay unchanged.
+- Malformed upstream SSE events use CPA debug logs with sanitized previews, tails, lengths, and parse errors. Valid event bytes stay unchanged.
 - CPA controls log output. The plugin creates no log file.
 
 ## Compatibility

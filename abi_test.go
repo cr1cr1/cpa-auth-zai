@@ -57,6 +57,16 @@ func TestRegistrationExposesOAuthProvider(t *testing.T) {
 	}
 }
 
+func TestPluginVersionCanBeOverridden(t *testing.T) {
+	previous := pluginVersion
+	t.Cleanup(func() { pluginVersion = previous })
+	pluginVersion = "9.8.7"
+	metadata := registration()["metadata"].(map[string]any)
+	if got := metadata["Version"]; got != "9.8.7" {
+		t.Fatalf("registered version = %v, want linker-injected 9.8.7", got)
+	}
+}
+
 // Acceptance: an unknown method must fail with an explicit error envelope, not
 // a silent success.
 func TestUnknownMethodFails(t *testing.T) {

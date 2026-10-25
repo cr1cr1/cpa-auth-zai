@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	pluginID      = "cpa-auth-zai"
-	pluginVersion = "0.1.0"
-	providerID    = "zai"
+	pluginID   = "cpa-auth-zai"
+	providerID = "zai"
 )
+
+var pluginVersion = "0.1.0"
 
 // handler processes one RPC method payload and returns the marshaled result.
 type handler func(payload []byte) (any, error)
